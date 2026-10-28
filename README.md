@@ -139,9 +139,9 @@ display version must match the profile's, or the build says so.
   full measurements are in [GAMES.md](GAMES.md#verified-on).
 - **Unsigned apps.** The launcher and the iPhone builds are not signed for you; you sideload them.
 - **Your own files.** No game data, firmware or keys are included or downloaded.
-- **Older shard archives still load.** The first iPhone builds packed Tears of the Kingdom into a
-  RomFS shard archive (`romfs.idx`); the build writes a single `romfs.img` now, and the reader for
-  the old archives is still shipped ([docs/ROMFS_ARCHIVE.md](docs/ROMFS_ARCHIVE.md)).
+- **Older shard archives are not read any more.** The first iPhone builds packed Tears of the Kingdom
+  into a RomFS shard archive (`romfs.idx`); the build writes a single `romfs.img` now. An iPhone
+  that still holds an old archive needs the game data sent again once, as a `romfs.img` through the launcher.
 
 ## For developers
 

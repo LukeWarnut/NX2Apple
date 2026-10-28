@@ -103,7 +103,7 @@ Keep "one game, one IPA"; move the game's modules out of the main executable int
   `pickedDataBookmark.<titleID>` with migration; `GameData.m` resolves like `main.m:69–117` with
   explicit title id/marker; `GameLauncher.m` sets `DM_AOC_DIR`, `DM_MSL_DIR`, `DM_PSO_BUNDLE`
   per game first, then app-wide; `LauncherSettings` per game; `GameLibrary` never treats
-  `romfs.idx` as "code installed" (design §233–240).
+  a data file as "code installed" (design §233–240).
 - Done when: two titles' `Documents/games/<id>/{romfs.img,romfs,save,temp,msl,pso,aoc}` are
   isolated; stale bookmark falls back; identity mismatch falls back; DLC `aoc/<index>.img`
   mounts (`hle_fs.c:516-518`).
@@ -121,7 +121,7 @@ shell's `DMSH_CHAIN`, unique title ids; at launch cross-check sections per modul
 `nro_count > 0`) — a mismatch marks the game `broken` without affecting others.
 
 Discovery: frameworks from `Bundle.main.privateFrameworksURL/*.framework`; data from
-`Documents/games/<title_id>/` (`romfs.img` complete, or `romfs/romfs.idx`, or
+`Documents/games/<title_id>/` (`romfs.img` complete, or
 `romfs/<manifest.romfs_marker>`); per-title bookmark for external drives; merge into
 playable / needsData / needsFramework / broken.
 

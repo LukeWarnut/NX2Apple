@@ -123,8 +123,8 @@ iPhone 上在「文件」App 里该 App 名字下：`save/` 和 `log.txt`（上�
   （[步骤](dm/ios/ENTITLEMENTS.md)）。完整的测量见 [GAMES.zh-CN.md](GAMES.zh-CN.md#验证情况)。
 - **App 未签名。** 启动器和 iPhone 构建不会替你签名，需要你自己侧载。
 - **你自己的文件。** 不包含也不下载任何游戏数据、固件或密钥。
-- **旧的分片归档仍能加载。** 最早的 iPhone 构建把《王国之泪》打成 RomFS 分片归档（`romfs.idx`）；现在
-  构建写出单个 `romfs.img`，但旧归档的读取层仍然随附（[docs/ROMFS_ARCHIVE.md](docs/ROMFS_ARCHIVE.md)）。
+- **旧的分片归档不再被读取。** 最早的 iPhone 构建把《王国之泪》打成 RomFS 分片归档（`romfs.idx`）；现在
+  构建写出单个 `romfs.img`。仍保留旧归档的 iPhone 需要通过启动器把游戏数据重新发送一次（`romfs.img`）。
 
 ## 给开发者
 

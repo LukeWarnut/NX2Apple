@@ -420,7 +420,7 @@ TABLE: dict[str, tuple[str, str]] = {
     'msg.repoInvalidEmpty': ('仓库路径无效：未选择——用上方的「选择仓库…」指向本项目的 clone', 'Invalid repository path: none chosen — use Choose repository… above'),
     'msg.archiveSkipped': ('IPA 已生成，但归档跳过：找不到 %@/v*/RomFS', 'IPA built, archive skipped: no %@/v*/RomFS'),
     'msg.archiveFailed': ('归档失败（退出码 %d）', 'Archive failed (exit code %d)'),
-    'msg.archiveNoStart': ('无法启动 romfs_arc.py', 'Could not start romfs_arc.py'),
+    'msg.archiveNoStart': ('无法启动 romfs_image.py', 'Could not start romfs_image.py'),
     'msg.archiveIpaOnly': ('IPA 已生成，归档失败', 'IPA built, but the archive failed'),
     'msg.done': ('完成：IPA 与 romfs 归档已生成，按下面三步装到手机', 'Done: the IPA and the romfs archive are ready — three steps below'),
     'prog.archiveDone': ('游戏数据就绪：%@/romfs.img', 'game data ready: %@/romfs.img'),

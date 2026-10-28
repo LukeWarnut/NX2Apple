@@ -10,15 +10,15 @@ Upstream-Status: pending
 Reason: Several games in one app, game data on an external drive: Documents/games/<id>/{romfs.img,romfs,msl,save,temp} and a Files-app pick of the data folder (needs the runtime profile). iOS twin of seedds/nxnative#460, which is Mac only
 Issue: LNPANDY/NX2Apple#123
 ---
- dm/ios/Sources/DataBookmark.h          |  32 ++++++++
- dm/ios/Sources/DataBookmark.m          |  79 ++++++++++++++++++
+ dm/ios/Sources/DataBookmark.h          |  32 +++++++
+ dm/ios/Sources/DataBookmark.m          |  79 +++++++++++++++++
  dm/ios/Sources/DmIOS-Bridging-Header.h |   3 +
- dm/ios/Sources/Launcher.swift          |  88 ++++++++++++++++++++
+ dm/ios/Sources/Launcher.swift          |  88 +++++++++++++++++++
  dm/ios/Sources/front_ios.m             |  13 ++-
- dm/ios/Sources/main.m                  | 109 +++++++++++++++++++++++--
+ dm/ios/Sources/main.m                  | 114 +++++++++++++++++++++++--
  dm/ios/project.yml                     |   1 +
- dm/ios/tests/test_romfs_startup.py     |  41 +++++++++-
- 8 files changed, 354 insertions(+), 12 deletions(-)
+ dm/ios/tests/test_romfs_startup.py     |  41 ++++++++-
+ 8 files changed, 359 insertions(+), 12 deletions(-)
  create mode 100644 dm/ios/Sources/DataBookmark.h
  create mode 100644 dm/ios/Sources/DataBookmark.m
  create mode 100644 dm/ios/Sources/DmIOS-Bridging-Header.h
@@ -307,7 +307,7 @@ index 45aa526b..56a432f1 100644
  - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
  - (UIRectEdge)preferredScreenEdgesDeferringSystemGestures { return UIRectEdgeAll; }   // Edge gestures need two swipes, to avoid accidental exits
 diff --git a/dm/ios/Sources/main.m b/dm/ios/Sources/main.m
-index fb37046e..5afddbb6 100644
+index fb37046e..63815d86 100644
 --- a/dm/ios/Sources/main.m
 +++ b/dm/ios/Sources/main.m
 @@ -7,9 +7,10 @@
@@ -322,26 +322,28 @@ index fb37046e..5afddbb6 100644
  #include "romfs_identity.h"
  #include "player_env.h"
  #ifndef DM_PLAYER_BUILD
-@@ -40,9 +41,59 @@ static int romfs_identity_accepts(NSString *img) {
+@@ -40,9 +41,61 @@ static int romfs_identity_accepts(NSString *img) {
      if (rc != ROMFS_ID_OK && rc != ROMFS_ID_NONE) fprintf(stderr, "[RED] boot: Documents/romfs.img is not the image this build needs (verdict %d); not used\n", rc);
      return rc == ROMFS_ID_OK || rc == ROMFS_ID_NONE;
  }
-+// A folder holds this game's files if it has a ROMFSARC index or the profile's marker path.
++// A folder holds this game's files if it has the profile's marker path.
 +// Shared by romfs_locate and the per-game layout below, so both answer the same question.
 +static BOOL romfs_dir_ok(NSString *d) {
 +    NSFileManager *fm = NSFileManager.defaultManager;
-+    // A ROMFSARC archive: <dir>/romfs.idx next to romfs.NN shards. The host opens it when DM_ROMFS
-+    // points at the base; the marker check does not apply (there are no directories to walk).
-+    if ([fm fileExistsAtPath:[d stringByAppendingPathComponent:@"romfs.idx"]]) return YES;
 +    // A plain directory tree: only one containing the game profile's romfs_marker path counts
 +    // (Mario: System/Resource, the resource size table). Runtime profile: the marker is a profile
 +    // value now; the compiled macro is only what dm_profile() falls back to without DM_PROFILE.
-+    return [fm fileExistsAtPath:[d stringByAppendingPathComponent:@(dm_profile()->romfs_marker)]];
++    if ([fm fileExistsAtPath:[d stringByAppendingPathComponent:@(dm_profile()->romfs_marker)]]) return YES;
++    // ROMFSARC shard archives (<dir>/romfs.idx next to romfs.NN) are no longer read: the folder is
++    // reported as holding no game data, so the launcher asks for the data again (romfs.img).
++    if ([fm fileExistsAtPath:[d stringByAppendingPathComponent:@"romfs.idx"]])
++        fprintf(stderr, "boot: %s holds an old RomFS shard archive (romfs.idx), which is no longer read; send the game data again as romfs.img\n", d.fileSystemRepresentation);
++    return NO;
 +}
 +
 +// Where one game's data lives under the per-game layout: Documents/games/<title ID>/, holding
 +//   romfs.img   the whole RomFS as one image file (what scripts/push_romfs.sh sends), or
-+//   romfs/      a ROMFSARC archive or a plain tree, for copies made before images
++//   romfs/      a plain tree, for copies made before images
 +//   msl/        this game's Metal shader libraries (optional; the app's own dm/ is used otherwise)
 +//   save/ temp/ this game's saves and scratch space
 +// The layout exists so several games can share one installed app and so the game data can sit on
@@ -382,7 +384,7 @@ index fb37046e..5afddbb6 100644
      NSString *img = [doc stringByAppendingPathComponent:@"romfs.img"];
      if (romfs_image_complete(img) && romfs_identity_accepts(img)) {
          // A folder copy from before images is now dead weight of up to many GB (often cut off partway). Deleting its 300,000 files here took longer than iOS allows an app to start
-@@ -58,13 +109,48 @@ static int romfs_identity_accepts(NSString *img) {
+@@ -58,13 +111,48 @@ static int romfs_identity_accepts(NSString *img) {
      }
      NSString *bundledImage = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"romfs.img"];
      NSString *documentFolder = [doc stringByAppendingPathComponent:@"romfs"];
@@ -433,7 +435,17 @@ index fb37046e..5afddbb6 100644
  // Boot prerequisites (done before UIApplicationMain): directories / environment variables / log -- the host's early load reads these
  // Why a slim build found no usable game files: the verdict on Documents/romfs.img, in the log and for the screen (front_ios_boot_message). NULL when the build has no romfs.id
  static char g_boot_message[640];
-@@ -127,15 +213,20 @@ static int boot_env(void) {
+@@ -92,6 +180,9 @@ static int boot_env(void) {
+     NSString *log = [doc stringByAppendingPathComponent:@"log.txt"], *prev = [doc stringByAppendingPathComponent:@"log.prev.txt"];
+     [fm removeItemAtPath:prev error:nil]; [fm moveItemAtPath:log toPath:prev error:nil];
+     if (freopen(log.fileSystemRepresentation, "w", stderr)) setvbuf(stderr, NULL, _IOLBF, 0);
++    // First line of the log: the fork's patches this build carries (Info.plist DMForkPatches), so a report says whether it comes from a build beyond upstream's support
++    NSString *fork_patches = [NSBundle.mainBundle objectForInfoDictionaryKey:@"DMForkPatches"];
++    fprintf(stderr, "fork patches: %s\n", [fork_patches isKindOfClass:NSString.class] && fork_patches.length ? fork_patches.UTF8String : "none");
+     // Environment switch files (for on-device diagnostics: a sideloaded app cannot be given environment variables from outside): one KEY=VALUE per line, # starts a comment; Documents/env.txt takes precedence over dm/env.txt in the bundle (put there by build_ipa.sh's DM_ENV_FILE)
+     NSMutableArray<NSString *> *from_file = [NSMutableArray array], *from_launch = [NSMutableArray array];
+     for (char **e = environ; *e; e++) {   // set at launch (Xcode, devicectl): before the env files, and the launcher keeps them
+@@ -127,15 +218,20 @@ static int boot_env(void) {
      NSString *lang = [NSBundle.mainBundle objectForInfoDictionaryKey:@"DMLanguage"];
      if (!getenv("DM_LANG") && [lang isKindOfClass:NSString.class] && lang.length) setenv("DM_LANG", lang.UTF8String, 0);
      fprintf(stderr, "boot: game language %s\n", getenv("DM_LANG") ?: "en-US");
