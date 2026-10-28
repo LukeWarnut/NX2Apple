@@ -372,7 +372,7 @@ def rmtree(p):
     """Make p gone. An entry that vanishes between the listing and its unlink is the goal reached, not an error: on an exFAT / FAT drive macOS keeps each AppleDouble `._x` beside `x`
     and drops it when `x` is deleted, so the walk's later unlink of `._x` raised FileNotFoundError and left the folder half deleted"""
     if p.is_symlink() or p.is_file(): p.unlink()
-    elif p.exists(): shutil.rmtree(p, **({'onexc': _gone} if sys.version_info >= (3, 12) else {'onerror': lambda f, q, e: _gone(f, q, e[1])}))   # Python 3.13 and later pass these by themselves
+    elif p.exists(): shutil.rmtree(p, onexc=_gone)   # Python 3.13 and later pass these by themselves
 
 
 def build_nx_extract(repo, work, logs, env):
@@ -1794,15 +1794,6 @@ def check_metal(py, repo, env):
     raise BuildError(msg.replace('set DM_ALLOW_OTHER_METAL=1 (the NSP script\'s --allow-other-metal)', 'ALLOW_OTHER_METAL = True (--allow-other-metal)'))
 
 
-def check_glslang(env):
-    """An OpenGL game's GLSL goes through glslangValidator; build_gl_shaders checks for it, but only
-    after the extraction and the runtime capture have run for minutes, and it raises before
-    layer_shaders creates gl_shaders.log — so the GUI showed a failure with no log to read (issue
-    #71). Checked before those steps, as check_metal is and for the same reason."""
-    if not shutil.which('glslangValidator', path=env['PATH']):
-        raise BuildError("glslangValidator is not installed: an OpenGL game's GLSL shaders need it to compile to SPIR-V (brew install glslang)")
-
-
 def shader_regressions(py, repo, lib_dir, chain, logs):
     """dm/gfx/tools/shader_regressions.py on the Mac libraries (dmsh_build.py writes its build report there in an iOS build too): shaders that translated in this game's previous build
     and fail with this chain stop the build, unless ALLOW_SHADER_REGRESSIONS. The chain is one for every game, so a change can break a game its author never ran (GitHub issue #272)"""
@@ -2189,12 +2180,6 @@ def main(args=None):
     keys = Path(os.path.expanduser(args.keys or PROD_KEYS or ask('path of prod.keys: ', 'prod.keys (-k)'))).resolve()
     if not nsp_dir.is_dir(): raise BuildError(f'not a folder: {nsp_dir}')
     if not keys.is_file(): raise BuildError(f'no such file: {keys}')
-    # An Intel Python (an Intel Homebrew under /usr/local) runs under Rosetta on an Apple silicon Mac, and its children prefer the
-    # x86_64 slice: the shader translator's universal apphost then wants an x86_64 .NET, finds the arm64 one, prints nothing, and
-    # the build stops at the iOS shader step with "xlate_source: lock … / actual" (empty), which reads like a stale translator.
-    # Say so here instead (ufooer's PR #31, item 3).
-    if sys.platform == 'darwin' and subprocess.run(['sysctl', '-n', 'sysctl.proc_translated'], capture_output=True, text=True).stdout.strip() == '1':
-        raise BuildError(f'{sys.executable} is an Intel Python running under Rosetta; run the build with a native arm64 Python (e.g. /usr/bin/python3 or Homebrew in /opt/homebrew)')
     sys.path.insert(0, str(repo / 'dm/games')); import game as gamemod   # game profiles
     global pg; import profile_guess as pg   # dm/games: a provisional profile's keys from the game files and from the heap check
     sys.path.insert(0, str(repo / 'dm/tools')); global nacp; import nacp   # the game name in the NSP's control data
@@ -2222,7 +2207,7 @@ def main(args=None):
     env.setdefault('DOTNET_CLI_TELEMETRY_OPTOUT', '1')
     env.setdefault('DOTNET_NOLOGO', '1')
     configure_dotnet(env)
-    xlate_bin = repo / 'dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate'   # the fork's check of the root configure_dotnet chose (sync_upstream.py, issue #92)
+    xlate_bin = repo / 'dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate'   # the fork's check of the root configure_dotnet chose (fork commit d0ed53df; the fork patch nsp-dotnet-root-verify)
     def xlate_answers(root):
         e = dict(env)
         if root: e['DOTNET_ROOT'] = str(root)
@@ -2356,7 +2341,6 @@ def main(args=None):
     if gfx == 'vulkan': say(f'Vulkan game ({src["graphics"][1]}): vk_shaders.py translates the shaders instead of the NVN shader chain')
     if gfx == 'gl': say(f'OpenGL game ({src["graphics"][1]}): gl_shaders.py translates the shaders instead of the NVN shader chain')
     if gfx == 'nvn': check_metal(py, repo, env)   # before the captures and the shader split, which take minutes
-    if gfx == 'gl': check_glslang(env)
     for on, k in ((glslc, 'glslc_capture'), (vkcap, 'vk_capture'), (glcap, 'gl_capture'), (uedec, 'ue_decode'), (gfx == 'nvn' and src['oodle_packs'][0], 'oodle_packs'), (gfx == 'nvn' and src['ue_legacy'][0], 'ue_legacy')):
         if on: say(src[k][1])
     PROG.add(glslc + vkcap + glcap + uedec + (gfx == 'nvn'))

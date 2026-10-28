@@ -403,13 +403,15 @@ Open an issue with one of the [issue forms](https://github.com/LNPANDY/NX2Apple/
 
 ## Staying current with upstream
 
+The engine (`dm/`, `scripts/`, `docs/`, `ref/`, `AGENTS.md`) is [seedds/nxnative](https://github.com/seedds/nxnative)
+at the commit in `.upstream-ref`, plus a queue of patches in [`patches/`](patches/README.md): one
+`git format-patch` file per change, each saying why the fork carries it and where it stands upstream.
 A scheduled GitHub Actions workflow (`.github/workflows/sync-upstream.yml`, daily 21:30 UTC, also
-runnable by hand) follows [seedds/nxnative](https://github.com/seedds/nxnative): it re-applies this
-fork's features onto upstream's tree through `scripts/sync_upstream.py`, verifies the result
-(Python 3.9 parse of every script, `bash -n`, the archive reader test, a macOS host build) and
-pushes — or opens an issue with the log when a patch no longer fits, pushing nothing. The repo is a
-fresh repository rather than a true fork, so GitHub's own "Sync fork" does not apply here; the last
-synced upstream commit lives in `.upstream-ref`.
+runnable by hand) moves the pin with `scripts/patches.py bump`, re-applies the patches with a
+three-way merge, drops the ones upstream has taken, verifies the result (the patch queue check, the
+tests, a macOS host build) and opens a pull request on `sync/upstream` — or an issue naming the
+patch when one no longer applies. Nothing is pushed to `main`. `scripts/patches.py status` lists
+what the fork carries.
 
 ## How to play
 

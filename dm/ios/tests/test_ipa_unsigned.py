@@ -55,7 +55,7 @@ class UnsignedIpaTests(unittest.TestCase):
                 return set(archive.namelist())
 
     def test_game_files_are_not_packed_by_default(self):
-        # The fork ships a slim IPA by default: the app reads Documents/games/<id>/ (patch_build_ipa).
+        # The fork ships a slim IPA by default: the app reads Documents/games/<id>/ (the fork patch ios-slim-ipa).
         names = self.pack()
         self.assertFalse([n for n in names if '/romfs' in n or '/aoc' in n])
 

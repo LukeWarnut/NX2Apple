@@ -244,12 +244,13 @@ cd frontend && swift run          # 或直接双击 frontend/nxnative.app
 
 ## 跟随上游更新
 
-一个定时的 GitHub Actions 工作流（`.github/workflows/sync-upstream.yml`，每天 21:30 UTC，也可手动
-触发）跟随 [seedds/nxnative](https://github.com/seedds/nxnative)：通过 `scripts/sync_upstream.py`
-把本 fork 的特性重新应用到上游新树上，并做验证（全部脚本按 Python 3.9 解析、`bash -n`、归档读取
-测试、macOS 宿主编译），通过即提交推送；补丁对不上时开一个 issue 并附日志，不推送。本仓库是独立
-新建的仓库而非真正的 fork，GitHub 自带的「Sync fork」用不了；上次同步的上游提交记录在
-`.upstream-ref`。
+引擎（`dm/`、`scripts/`、`docs/`、`ref/`、`AGENTS.md`）就是 [seedds/nxnative](https://github.com/seedds/nxnative)
+在 `.upstream-ref` 所记提交上的内容，再加 [`patches/`](patches/README.md) 里的一组补丁：每项改动一个
+`git format-patch` 文件，写明本 fork 为什么带着它、它在上游处于什么状态。定时的 GitHub Actions 工作流
+（`.github/workflows/sync-upstream.yml`，每天 21:30 UTC，也可手动触发）用 `scripts/patches.py bump`
+移动基准提交，以三方合并重新应用补丁，丢掉上游已采纳的补丁，做验证（补丁队列检查、测试、macOS
+宿主编译），然后在 `sync/upstream` 分支上开一个 pull request；某个补丁对不上时，开一个点名该补丁的
+issue。不会向 `main` 直接推送。`scripts/patches.py status` 列出本 fork 带着的全部补丁。
 
 ## 使用方法
 

@@ -88,6 +88,14 @@ body:
       placeholder: MacBook Pro M2 Max, macOS 26.1
     validations:
       required: true
+  - type: input
+    id: fork-patches
+    attributes:
+      label: Fork patches line
+      description: "The patches your build carries beyond upstream's engine: the first line of the game app's log (`fork patches: ...`), or the contents of `dm/fork_patches.txt` in the NX2Apple folder you built from. Optional."
+      placeholder: "fork patches: runtime-profile, romfsarc, ..."
+    validations:
+      required: false
   - type: checkboxes
     id: no-game-files
     attributes:
