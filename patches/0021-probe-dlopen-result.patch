@@ -1,0 +1,84 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LNPANDY <lnp-andy@hotmail.com>
+Date: Wed, 28 Oct 2026 23:02:41 +0800
+Subject: [PATCH] =?UTF-8?q?docs:=20the=20dlopen=20probe=20passed=20on=20a?=
+ =?UTF-8?q?=20device=20(iOS=2027.0.1,=20sideloaded)=20=E2=80=94=20route=20?=
+ =?UTF-8?q?C's=20gate=20is=20open?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The run log is recorded verbatim: dlopen('@executable_path/Frameworks/
+Probe.framework/Probe') returned a handle, dlsym found probe_answer and
+calling it gave 42. What it does not prove is spelled out next to it (a
+framework with the game's sections, vm_remap of signed __TEXT,
+getsectiondata on a dylib header, other sideloaders). WORK-IN-PROGRESS's
+C7 row now says the experiment passed and names the next step.
+
+Upstream-Status: fork-only
+Reason: The dlopen probe result on a device: route C's gate is open
+Issue: LNPANDY/NX2Apple#139
+
+---
+ docs/WORK-IN-PROGRESS.md |  2 +-
+ docs/probe-dlopen.md     | 34 ++++++++++++++++++++++++++++++++++
+ 2 files changed, 35 insertions(+), 1 deletion(-)
+
+diff --git a/docs/WORK-IN-PROGRESS.md b/docs/WORK-IN-PROGRESS.md
+index 163d6de3..5a11bdf8 100644
+--- a/docs/WORK-IN-PROGRESS.md
++++ b/docs/WORK-IN-PROGRESS.md
+@@ -60,7 +60,7 @@ Ordered by value per week. See `docs/ROADMAP.md` for the reasoning.
+ | C4 | **Settings capability gating** (`requires` + `defaultAtFps` from AnySwitch) | 1–2 wks | Polish; needs `settings.tsv` schema change |
+ | C5 | **Universal launcher architecture B** (4–8 games per IPA) | 3–4 wks | Blocked on: NRO-style module packing for non-NRO modules (`loader.c map_image`), and on deciding whether 4–8 games is worth it |
+ | C6 | **Multiplayer (LAN / lan-play / wireless)** | 2–3 wks for one game | Protocol documented in `docs/MULTIPLAYER.md`; needs BSD socket layer + virtual network + per-game `ldn` mapping. Untested: iOS multicast entitlement on a sideloaded IPA |
+-| C7 | **Launcher architecture C** (`dlopen` per-game framework) | large | Needs a `dlopen` feasibility experiment first, per the investigation |
++| C7 | **Launcher architecture C** (`dlopen` per-game framework) | large | Feasibility experiment **passed** on a device (iOS 27.0.1, sideloaded: `dlopen` of a nested framework + `dlsym` + call, docs/probe-dlopen.md); next is one real game as a framework in a shell app |
+ | C8 | **Pikmin 4 / Yoshi / other fork profiles** | days each | Cherriable from forks once their PRs land upstream |
+ 
+ ## D. Blocked on upstream
+diff --git a/docs/probe-dlopen.md b/docs/probe-dlopen.md
+index 625759c0..42ef8aba 100644
+--- a/docs/probe-dlopen.md
++++ b/docs/probe-dlopen.md
+@@ -52,6 +52,40 @@ its screen:
+    lines appeared, the app died before logging: send the crash report instead (Settings → Privacy
+    & Security → Analytics Data → `DmProbe-*.ips`).
+ 
++## Result: FEASIBLE (device run, 2026-10-26)
++
++Run on an iPhone (iOS **27.0.1**, sideloaded IPA; probe built 2026-10-27). The full log:
++
++```text
++---- DmProbe run 2026-10-26 19:51:50 +0000 (probe built Oct 27 2026 03:48:01) ----
++bundle:      /private/var/containers/Bundle/Application/62C345BC-…/DmProbe.app
++executable:  /private/var/containers/Bundle/Application/62C345BC-…/DmProbe.app/DmProbe
++iOS:         27.0.1 (iPhone)
++framework file …/DmProbe.app/Frameworks/Probe.framework/Probe: present
++dlopen("@executable_path/Frameworks/Probe.framework/Probe", RTLD_NOW)
++  -> handle 0x66951e70
++dlsym(handle, "probe_answer")
++  -> probe_answer at 0x102878000 in …/Frameworks/Probe.framework/Probe (image base 0x102874000)
++  -> probe_answer() = 42
++RESULT: FEASIBLE - dlopen("@executable_path/Frameworks/Probe.framework/Probe") succeeded and probe_answer() = 42: a sideloaded app can load and call code in a framework inside its own bundle (route C is viable)
++```
++
++So the gate is passed: on a stock, non-jailbroken iPhone, after the sideloader re-signed the app
++and every nested framework, iOS loads the nested framework from `@executable_path/Frameworks/`,
++resolves a symbol in it and executes it. Route C is viable in principle.
++
++**What this still does not prove** (design doc §R1, and the reasons are different):
++- a framework carrying the game's working set — the many `__DM*W` sections (up to 255 per image),
++  tens of MB of `__TEXT` — loads and executes like this one-function probe;
++- the launcher's `vm_remap` of the game image's signed `__TEXT` into an anonymous address
++  (copy = FALSE) is accepted for a sideloaded, re-signed framework;
++- `getsectiondata` on a *dylib* header (the probe only used `dlsym`/`dladdr`);
++- loading a framework that was re-signed by a free Apple ID and installed through a different
++  sideloader than the probe's.
++
++The next step is the first milestone of the plan on [#123](https://github.com/LNPANDY/NX2Apple/issues/123):
++one real game as a framework, in a shell app, on a device.
++
+ ## Reading the result
+ 
+ | Last line of probe-log.txt | Meaning |

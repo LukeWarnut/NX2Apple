@@ -18,3 +18,5 @@
 0017-fork-patches-stamp.patch
 0018-nsp-dotnet-root-verify.patch
 0019-nsp-prune-intermediate-extracts.patch
+0020-launcher-c-plan.patch
+0021-probe-dlopen-result.patch
