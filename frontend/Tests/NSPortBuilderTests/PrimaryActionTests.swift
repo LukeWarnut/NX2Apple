@@ -45,6 +45,25 @@ final class PrimaryActionTests: XCTestCase {
         XCTAssertEqual(LibraryGame(titleID: titleID, name: "H", appPath: temporary.appendingPathComponent("gone.app").path).primary, .build, "a deleted Mac app")
     }
 
+    /// A cleaned build folder keeps the install record: the launcher still offers to put the game back (Manage →
+    /// Reinstall) instead of "not built yet".
+    private struct PrimeSnapshot: Encodable { let games: [LibraryGame]; let folder: String }
+
+    @MainActor func testAnInstallRecordOutlivesTheCachedApp() throws {
+        var game = LibraryGame(titleID: titleID, name: "Hades")
+        game.installedDevice = "00008150-AAAA"
+        game.installedBundleID = "org.nxnative.test"
+        let file = temporary.appendingPathComponent("library-primary.json")
+        try JSONEncoder().encode(PrimeSnapshot(games: [game], folder: "")).write(to: file)
+        let library = GameLibrary(file: file)
+        library.pruneMissingPaths()
+        let cleaned = try XCTUnwrap(library.games.first)
+        XCTAssertEqual(cleaned.installedDevice, "00008150-AAAA")
+        XCTAssertFalse(cleaned.isReady)
+        XCTAssertFalse(cleaned.hasIOSBuild)
+        XCTAssertFalse(cleaned.onDevice, "the cached app is gone; the phone state decides, not the local path")
+    }
+
     func testRevealTargetPrefersWhatExists() throws {
         let app = try makeApp(), ipa = try makeIPA(), ios = try makeIOSApp()
         let gone = temporary.appendingPathComponent("gone").path
@@ -76,7 +95,8 @@ final class PrimaryActionTests: XCTestCase {
         let a = try XCTUnwrap(library.games.first { $0.name == "Kept" }), b = try XCTUnwrap(library.games.first { $0.name == "Stale" })
         XCTAssertEqual(a.appPath, app.path)
         XCTAssertEqual(a.ipaPath, ipa.path)
-        XCTAssertEqual([b.appPath, b.ipaPath, b.iosAppPath, b.installedDevice], ["", "", "", ""])
+        XCTAssertEqual([b.appPath, b.ipaPath, b.iosAppPath, b.installedDevice], ["", "", "", "UDID"],
+                       "the cached app is forgotten; where the game was installed is not (the phone may still have it)")
         // saved: a fresh load sees the cleared entry too, and the entries are kept
         let again = GameLibrary(file: file)
         XCTAssertEqual(again.games.first { $0.name == "Stale" }?.appPath, "")
