@@ -20,3 +20,4 @@ route-c-loader-image-header
 route-c-game-framework
 route-c-framework-build
 route-c-framework-tests
+docs-dm-framework-in-the-env-switches-table
