@@ -225,10 +225,10 @@ def load(folder=None, exefs=None, romfs=None, dlc=()):
     """The dump. folder is a version directory or a game directory; exefs and romfs name the two directories when they are given on their own."""
     dlc = list(dlc or [])
     if exefs or romfs:
-        if not (exefs and romfs): raise DumpError('a raw ExeFS needs the RomFS too (--exefs and --romfs)')
+        if not (exefs and romfs): raise DumpError('a raw ExeFS needs the RomFS too (--exefs and --switch2-romfs)')
         dump = from_pair(exefs, romfs, folder)
     else:
-        if not folder: raise DumpError('give a Switch 2 folder, or --exefs and --romfs')
+        if not folder: raise DumpError('give a Switch 2 folder, or --exefs and --switch2-romfs')
         dump = from_folder(folder)
     extra, warns = extra_dlc(dlc, dump.app)
     dump.warnings.extend(warns)
