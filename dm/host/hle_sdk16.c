@@ -104,14 +104,90 @@ static const void *font_payload(const void *p) {
     return r;
 }
 static uint32_t (*font_load)(void *, char *, const void *, unsigned, unsigned);
-static pthread_once_t font_load_once = PTHREAD_ONCE_INIT;
+static uint32_t (*font_init)(void *, void *, unsigned);
+static void (*font_fini)(void *);
+static pthread_once_t font_load_once = PTHREAD_ONCE_INIT, font_init_once = PTHREAD_ONCE_INIT;
 static void font_load_init(void) {
     font_load = guest_sym("_ZN2nn6fontll18ScalableFontEngine8LoadFontEPcPKvjj");
     if (!font_load) die("ScalableFontEngine::LoadFont not found in the guest");
 }
-HLE_FORCE("_ZN2nn6fontll18ScalableFontEngine8LoadFontEPcPKvjj", "shared font BFTTF allocation base → TTF payload; parsing and errors stay in the SDK", uint32_t, h_font_LoadFont, void *self, char *name, const void *data, unsigned index, unsigned capacity) {
+static void font_init_resolve(void) {
+    font_init = guest_sym("_ZN2nn6fontll18ScalableFontEngine10InitializeEPvj");
+    font_fini = guest_sym("_ZN2nn6fontll18ScalableFontEngine8FinalizeEv");
+    if (!font_init) die("ScalableFontEngine::Initialize not found in the guest");
+}
+// The engine's heap is the work buffer the game passed to Initialize. Monotype iType (the SDK's fontll) copies per-glyph tables into it and returns 201 (0xc9) when an allocation fails.
+// Mario Tennis Aces (Demo) gives the main engine 512 KB, which holds Arial Unicode, and each sheet engine 0xc800 bytes, which does not: LoadFont returns 201, CheckGlyphExist('?') is false, and the lookup null-derefs.
+// A failed load has already spent the heap, so the smaller font is loaded only after Finalize + Initialize rebuild it in the same buffer. Arial.ttf (a few thousand glyphs) fits in 0xc800; the built-in font is the last resort.
+#include "font_ll.ttf.inc"
+#define FONT_WS 128
+static struct { void *eng, *buf; uint32_t sz; } font_ws[FONT_WS];
+static void font_ws_put(void *eng, void *buf, uint32_t sz) {
+    int slot = -1;
+    pthread_mutex_lock(&font_mu);
+    for (int i = 0; i < FONT_WS; i++) {
+        if (font_ws[i].eng == eng) { font_ws[i].buf = buf; font_ws[i].sz = sz; pthread_mutex_unlock(&font_mu); return; }
+        if (!font_ws[i].eng && slot < 0) slot = i;
+    }
+    if (slot >= 0) { font_ws[slot].eng = eng; font_ws[slot].buf = buf; font_ws[slot].sz = sz; }
+    else LOG("[YELLOW] shared font: work-buffer table full; a stand-in that does not fit cannot be replaced");
+    pthread_mutex_unlock(&font_mu);
+}
+static int font_ws_get(void *eng, void **buf, uint32_t *sz) {
+    pthread_mutex_lock(&font_mu);
+    for (int i = 0; i < FONT_WS; i++) if (font_ws[i].eng == eng) { *buf = font_ws[i].buf; *sz = font_ws[i].sz; pthread_mutex_unlock(&font_mu); return 1; }
+    pthread_mutex_unlock(&font_mu); return 0;
+}
+static int font_is_std(const void *p) {
+    if (!p) return 0;
+    pthread_mutex_lock(&font_mu);
+    int r = std_f.p && (p == std_f.p || p == std_f.p + 8);
+    pthread_mutex_unlock(&font_mu);
+    return r;
+}
+static const uint8_t *font_small_ttf(void) {
+    static const uint8_t *p; static int done;
+    pthread_mutex_lock(&font_mu);
+    if (done) { const uint8_t *r = p; pthread_mutex_unlock(&font_mu); return r; }
+    char path[1024]; const char *dir = getenv("DM_FONT_DIR");
+    const char *cands[5]; int n = 0;
+    cands[n++] = getenv("DM_FONT_LL");
+    if (dir && *dir) { snprintf(path, sizeof path, "%s/fontll.ttf", dir); cands[n++] = path; }
+    cands[n++] = "/System/Library/Fonts/Supplemental/Arial.ttf";
+    cands[n++] = "/Library/Fonts/Arial.ttf";
+    for (int i = 0; i < n; i++) {
+        if (!cands[i] || !*cands[i]) continue;
+        font_t f = font_map(cands[i]); if (!f.p) continue;
+        p = f.p + 8; done = 1; pthread_mutex_unlock(&font_mu);
+        LOG("shared font: smaller stand-in for a font engine whose work buffer cannot hold the full one: %s", cands[i]);
+        return p;
+    }
+    p = font_ll_ttf; done = 1; pthread_mutex_unlock(&font_mu);
+    LOG("shared font: smaller stand-in for a font engine whose work buffer cannot hold the full one: built-in compact font (%zu bytes)", sizeof font_ll_ttf);
+    return p;
+}
+HLE_FORCE("_ZN2nn6fontll18ScalableFontEngine10InitializeEPvj", "remember the work buffer so a shared-font stand-in that does not fit can be loaded into a fresh heap", uint32_t, h_font_Init, void *self, void *buf, unsigned size) {
+    pthread_once(&font_init_once, font_init_resolve);
+    uint32_t r = font_init(self, buf, size);
+    if (!r && self && buf && size) font_ws_put(self, buf, size);
+    return r;
+}
+HLE_FORCE("_ZN2nn6fontll18ScalableFontEngine8LoadFontEPcPKvjj", "shared font BFTTF allocation base → TTF payload; a stand-in that does not fit the engine heap is loaded again as a smaller font", uint32_t, h_font_LoadFont, void *self, char *name, const void *data, unsigned index, unsigned capacity) {
     pthread_once(&font_load_once, font_load_init);
-    return font_load(self, name, font_payload(data), index, capacity);
+    const void *pay = font_payload(data);
+    uint32_t r = font_load(self, name, pay, index, capacity);
+    if (r != 0xc9 || !font_is_std(data)) return r;   // 201: iType heap allocation failed. Only the host's standard stand-in is swapped; a game font that does not fit is the game's
+    void *buf = NULL; uint32_t sz = 0;
+    if (!font_ws_get(self, &buf, &sz)) { LOG("[YELLOW] shared font: LoadFont error 201 and this engine's work buffer was not seen at Initialize"); return r; }
+    const uint8_t *small = font_small_ttf();
+    LOG("shared font: the stand-in does not fit a %u-byte font engine (LoadFont error 201); loading a smaller font", sz);
+    pthread_once(&font_init_once, font_init_resolve);
+    if (font_fini) font_fini(self);
+    uint32_t ir = font_init(self, buf, sz);
+    if (ir) { LOG("[RED] shared font: re-Initialize after error 201 failed (%u)", ir); return r; }
+    uint32_t r2 = font_load(self, name, small, index, capacity);
+    if (r2) LOG("[RED] shared font: the smaller font failed in a %u-byte engine (LoadFont error %u)", sz, r2);
+    return r2;
 }
 // The address points straight at the TTF (past the 8-byte header) and the size excludes the header, except for a game on SDK 11 or later whose main imports ScalableFontEngineHelper::Decode
 //   (dm_sdk_major, dm_main_imports; the profile's shared_font overrides). Super Mario 3D World + Bowser's Fury (SDK 10) records shared fonts as type 0 (main+0x975658), calls no Decode and hands the address

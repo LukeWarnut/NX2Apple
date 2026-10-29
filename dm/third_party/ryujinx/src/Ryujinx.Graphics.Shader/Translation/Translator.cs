@@ -37,7 +37,9 @@ namespace Ryujinx.Graphics.Shader.Translation
                 definitions = CreateComputeDefinitions(gpuAccessor);
                 localMemorySize = gpuAccessor.QueryComputeLocalMemorySize();
 
-                program = Decoder.Decode(definitions, gpuAccessor, address);
+                program = options.Flags.HasFlag(TranslationFlags.Ampere)
+                    ? AmpereDecoder.Decode(definitions, gpuAccessor, address)
+                    : Decoder.Decode(definitions, gpuAccessor, address);
             }
             else
             {
@@ -46,7 +48,10 @@ namespace Ryujinx.Graphics.Shader.Translation
                 definitions = CreateGraphicsDefinitions(gpuAccessor, header);
                 localMemorySize = GetLocalMemorySize(header);
 
-                program = Decoder.Decode(definitions, gpuAccessor, address + HeaderSize);
+                // nxnative: an Ampere program keeps the same 0x50-byte SPH, padded to 0x80 bytes before the first instruction
+                program = options.Flags.HasFlag(TranslationFlags.Ampere)
+                    ? AmpereDecoder.Decode(definitions, gpuAccessor, address + AmpereDecoder.HeaderSize)
+                    : Decoder.Decode(definitions, gpuAccessor, address + HeaderSize);
             }
 
             ulong maxEndAddress = 0;
@@ -62,7 +67,7 @@ namespace Ryujinx.Graphics.Shader.Translation
                 }
             }
 
-            int size = (int)maxEndAddress + (options.Flags.HasFlag(TranslationFlags.Compute) ? 0 : HeaderSize);
+            int size = (int)maxEndAddress + (options.Flags.HasFlag(TranslationFlags.Compute) ? 0 : options.Flags.HasFlag(TranslationFlags.Ampere) ? AmpereDecoder.HeaderSize : HeaderSize);
 
             return new TranslatorContext(address, size, localMemorySize, definitions, gpuAccessor, options, program);
         }
@@ -333,6 +338,12 @@ namespace Ryujinx.Graphics.Shader.Translation
                     context.Add(new CommentNode(dbgComment));
                 }
 
+                if (op.IsAmpere)
+                {
+                    EmitAmpereOp(context, block, opIndex, op);
+                    continue;
+                }
+
                 InstConditional opConditional = new(op.RawOpCode);
 
                 bool noPred = op.Props.HasFlag(InstProps.NoPred);
@@ -391,6 +402,56 @@ namespace Ryujinx.Graphics.Shader.Translation
                 {
                     context.MarkLabel(predSkipLbl);
                 }
+            }
+        }
+
+        // nxnative: an Ampere instruction's guard predicate is bits 12-14 with bit 15 inverting it. Branches (BRA, BRX, EXIT, RET) take it themselves, with their own condition.
+        private static void EmitAmpereOp(EmitterContext context, Block block, int opIndex, InstOp op)
+        {
+            int pred = (int)(op.RawOpCode >> 12) & 7;
+            bool predInv = ((op.RawOpCode >> 15) & 1) != 0;
+
+            if (pred == RegisterConsts.PredicateTrueIndex && predInv)
+            {
+                return;
+            }
+
+            Operand predSkipLbl = null;
+
+            if (pred != RegisterConsts.PredicateTrueIndex && !op.Props.HasFlag(InstProps.NoPred))
+            {
+                Operand label;
+
+                if (opIndex == block.OpCodes.Count - 1 && block.HasNext())
+                {
+                    label = context.GetLabel(block.Successors[0].Address);
+                }
+                else
+                {
+                    label = Label();
+
+                    predSkipLbl = label;
+                }
+
+                Operand predReg = Register(pred, RegisterType.Predicate);
+
+                if (predInv)
+                {
+                    context.BranchIfTrue(label, predReg);
+                }
+                else
+                {
+                    context.BranchIfFalse(label, predReg);
+                }
+            }
+
+            context.CurrOp = op;
+
+            op.Emitter?.Invoke(context);
+
+            if (predSkipLbl != null)
+            {
+                context.MarkLabel(predSkipLbl);
             }
         }
     }

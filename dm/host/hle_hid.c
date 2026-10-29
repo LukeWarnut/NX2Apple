@@ -267,6 +267,19 @@ static int states(NpadState *out, int n, uint32_t id, uint32_t style) {
 }
 
 HLE_FORCE("_ZN2nn3hid14InitializeNpadEv", "connect to the hid service; the host takes input from the front-end state", void, h_hid_InitNpad, void) {}
+// Jcms (Switch 2's SDK; the Joy-Con 2 mouse sensor, by its Nmouse button settings): the SDK's functions are IPC to hid, which the host does not serve, so InitializeJcms crashed
+// in Donkey Kong Bananza's start-up (sdk+0x654c6c, after "the game connects to service hid itself"). Start, Stop, Initialize and Finalize abort on failure and return nothing;
+// the host has no mouse sensor, so every handle reads no samples. A handle packs the npad id in bits 0-7 and the type in bits 8-15 (the SDK's utility::MakeJcmsHandle)
+HLE_FORCE("_ZN2nn3hid14InitializeJcmsEPvm", "Joy-Con 2 mouse sensor: none on the host", void, h_hid_InitJcms, void *work, uint64_t size) { (void)work; (void)size; }
+HLE_FORCE("_ZN2nn3hid12FinalizeJcmsEv", "Joy-Con 2 mouse sensor: none on the host", void, h_hid_FiniJcms, void) {}
+HLE_FORCE("_ZN2nn3hid13GetJcmsHandleERKjRKNS0_8JcmsTypeE", "Joy-Con 2 mouse sensor handle", uint32_t, h_hid_JcmsHandle, const uint32_t *id, const uint32_t *type) {
+    return (*id & 0xff) | (*type & 0xff) << 8;
+}
+HLE_FORCE("_ZN2nn3hid9StartJcmsERKNS0_10JcmsHandleE", "Joy-Con 2 mouse sensor: none on the host", void, h_hid_StartJcms, const uint32_t *h) { (void)h; }
+HLE_FORCE("_ZN2nn3hid8StopJcmsERKNS0_10JcmsHandleE", "Joy-Con 2 mouse sensor: none on the host", void, h_hid_StopJcms, const uint32_t *h) { (void)h; }
+HLE_FORCE("_ZN2nn3hid13GetJcmsStatesEPNS0_9JcmsStateEiRKNS0_10JcmsHandleE", "Joy-Con 2 mouse sensor: no samples", int, h_hid_JcmsStates, void *s, int n, const uint32_t *h) {
+    (void)s; (void)n; (void)h; return 0;
+}
 // Supported npad ids: players 2..8 are reported only on supported npads; a one-player game ({No1, Handheld}) gets every controller as player 1 (merged_players); a four-player
 // game ({No1..No4, Handheld}) gets players 1..4, and a fifth controller is not used
 HLE_FORCE("_ZN2nn3hid22SetSupportedNpadIdTypeEPKjm", "supported controller ids; the host records them and reports further players only on supported ids", void, h_hid_SetIds, const uint32_t *ids, uint64_t n) {

@@ -210,10 +210,22 @@ def main(argv=None):
         part = work / f'{arch}.mtl4a.partial'; part.unlink(missing_ok=True)
         cmd = ['xcrun', '-sdk', sdk(a.platform), 'metal-tt', '-arch', arch, f'-{a.platform}-version-min', osmin, str(js), '-o', str(part)]
         t1 = time.time(); print(f'pso_offline: {arch}: metal-tt, {len(bases)} bases (minutes) ...', flush=True)
-        with open(work / f'metal-tt.{arch}.log', 'w') as log:
-            r = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, env=dict(os.environ, TMPDIR=str(work)))   # its temporary files on the work folder's volume
+        # metal-tt writes its temporary files and the archive on the work folder's volume, and its workers abort when a write fails: Donkey Kong Bananza's 16,148 bases stopped after
+        # 7 minutes with only "air-tt: applegpu-nt command failed", and every air-nt crash report showed llvm::report_fatal_error from raw_fd_ostream's destructor (a failed write)
+        # on a Mac with 8 GB of free disk and growing swap. The same script built when space came back (17 minutes, 924 MB from 2.5 GB of libraries, 520 MB of temporaries at the
+        # failure). So: a note when the volume has less than twice the libraries' bytes free, a second try after a failure, and the free space in the failure message
+        need = 2 * sum((lib_dir / f'{name}.metallib').stat().st_size for name in {lib for vl, _, fl, _ in bases for lib in (vl, fl)})
+        if (free := shutil.disk_usage(work).free) < need:
+            print(f'[NOTE] pso_offline: {arch}: {free / 2**30:.1f} GB free on the work folder\'s volume, under the {need / 2**30:.1f} GB metal-tt may need: it fails when a write does', flush=True)
+        for attempt in (1, 2):
+            with open(work / f'metal-tt.{arch}.log', 'w') as log:
+                r = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, env=dict(os.environ, TMPDIR=str(work)))   # its temporary files on the work folder's volume
+            if (not r.returncode and part.is_file()) or attempt == 2: break
+            print(f'[NOTE] pso_offline: {arch}: metal-tt failed (exit {r.returncode}: {(work / f"metal-tt.{arch}.log").read_text().strip().splitlines()[-1:]}), trying once more', flush=True)
+            part.unlink(missing_ok=True)
         if r.returncode or not part.is_file():
-            sys.exit(f'[RED] pso_offline: metal-tt failed for {arch} (exit {r.returncode}): {(work / f"metal-tt.{arch}.log").read_text()[-2000:]}')
+            sys.exit(f'[RED] pso_offline: metal-tt failed for {arch} (exit {r.returncode}; {shutil.disk_usage(work).free / 2**30:.1f} GB free on the work folder\'s volume, '
+                     f'metal-tt fails when a write does): {(work / f"metal-tt.{arch}.log").read_text()[-2000:]}')
         os.replace(part, dst); kf.write_text(key + '\n')
         print(f'pso_offline: {arch}: {dst.stat().st_size / 2**20:.0f} MB in {time.time() - t1:.0f} s')
     for f in out.glob('*.mtl4a'):   # architectures no longer asked for

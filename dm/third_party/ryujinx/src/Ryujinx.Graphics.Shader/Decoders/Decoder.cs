@@ -9,7 +9,7 @@ namespace Ryujinx.Graphics.Shader.Decoders
 {
     static class Decoder
     {
-        private class Context
+        internal class Context   // nxnative: internal, AmpereDecoder decodes into the same context
         {
             public AttributeUsage AttributeUsage { get; }
             public FeatureFlags UsedFeatures { get; private set; }
@@ -371,6 +371,12 @@ namespace Ryujinx.Graphics.Shader.Decoders
                 indexed = opIpa.Idx;
             }
 
+            SetUserAttributeUses(definitions, context, offset, count, isStore, indexed, perPatch);
+        }
+
+        // nxnative: the attribute range of one ALD, AST or IPA, from either decoder (AmpereDecoder reads the Ampere fields)
+        internal static void SetUserAttributeUses(ShaderDefinitions definitions, Context context, int offset, int count, bool isStore, bool indexed, bool perPatch)
+        {
             if (indexed)
             {
                 if (isStore)
@@ -505,6 +511,11 @@ namespace Ryujinx.Graphics.Shader.Decoders
 
         private static bool IsUnconditional(ref InstOp op)
         {
+            if (op.IsAmpere)
+            {
+                return AmpereDecoder.IsUnconditional(op);
+            }
+
             InstConditional condOp = new(op.RawOpCode);
 
             if ((op.Name == InstName.Bra || op.Name == InstName.Exit) && condOp.Ccc != Ccc.T)

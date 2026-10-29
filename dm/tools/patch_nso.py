@@ -563,7 +563,12 @@ def jump_offsets(insl, j, copy_first=False, far_base=False):
     For the table base xB, search back for the nearest writer: it must be add xB,xB,#lo, and the writer before it must be adrp xB. With far_base, a base that nothing writes in those
     256 instructions was set further back, and its writer chain is followed to the function's start (table_base far), every target an instruction of the function: ASTRAL CHAIN main+0x6db498
     and +0x6db70c load bases set 441 and 549 instructions before, x24 in the function's first block and x3 after it, which the loop around their dispatches keeps. A function-wide search
-    for the one adrp + add pair that fits (table_cands, as jump_adr_offsets does) finds two for x3 there, the other a table of its own further on. Returns all targets, or None if not recognized"""
+    for the one adrp + add pair that fits (table_cands, as jump_adr_offsets does) finds two for x3 there, the other a table of its own further on.
+    and xI, xS, #0xffffffff is a zero-extend of wS, not a value mask (Mario Tennis Aces demo 1.0.0 main+0x388d7c: cmp x8,#5; b.hs; cmp w8,#4; b.hi;
+    and x18,x8,#0xffffffff; ldrsw x18,[x16,x18,lsl #2]; add x18,x18,x16; br x18). The walk above records every and of the index as a mask, so the cmp w8,#4
+    that sizes the table (five entries; the next slot is zero, so the wider cmp x8,#5; b.hs must not be the one that counts) is never a check of the index.
+    Only the last attempt follows that and, and only after the walk above and check_before_copy found no check, so a site that already matched is unchanged.
+    Returns all targets, or None if not recognized"""
     ctx = insl[max(0, j - 16):j]
     add = next((p for p in reversed(ctx) if p.mnemonic == 'add' and re.fullmatch(r'x18, x\d+, x\d+', p.op_str)), None)
     if not add: return None
@@ -597,6 +602,28 @@ def jump_offsets(insl, j, copy_first=False, far_base=False):
                 break
             if cmp: break
     if not cmp and copy_first: cmp = check_before_copy(insl, ctx, ld, idx)
+    if not cmp and far_base:
+        # The zero-extend above. Restart from the load's index: the walk already spent the and on the mask path and did not keep wS.
+        idx = {'w' + re.fullmatch(rf'{t}, \[{rb}, x(\d+), lsl #2\]', ld.op_str).group(1)}
+        born = {}   # w-reg -> index of the and that zero-extended it (or of the and a mov copied that from)
+        def writes(p):   # a compare only sets the flags; capstone lists its first operand as written
+            return set() if p.mnemonic in ('cmp', 'cmn', 'tst') else {wname(p.reg_name(r)) for r in p.regs_access()[1]}
+        for i in range(k0 - 1, -1, -1):
+            p = ctx[i]
+            m = re.fullmatch(r'(w\d+), (w\d+)', p.op_str) if p.mnemonic == 'mov' else None
+            if m and m.group(1) in idx:
+                idx.add(m.group(2))
+                if m.group(1) in born: born.setdefault(m.group(2), born[m.group(1)])
+                continue
+            m = re.fullmatch(r'(x\d+), ([wx]\d+), #(0x[0-9a-f]+|\d+)', p.op_str) if p.mnemonic == 'and' else None
+            if m and wname(m.group(1)) in idx and int(m.group(3), 0) == 0xffffffff:
+                src = wname(m.group(2)); idx.add(src); born.setdefault(src, i); continue
+            m = re.fullmatch(r'([wx]\d+), #(0x[0-9a-f]+|\d+)', p.op_str) if p.mnemonic == 'cmp' else None
+            if not m: continue
+            src = wname(m.group(1))
+            if src not in born: continue   # a compare of the original index was the walk above's to take; it found none
+            if any(src in writes(ctx[z]) for z in range(i + 1, born[src])): break   # the compared value is not what was zero-extended
+            cmp = p; break
     if not cmp: return None
     n = int(cmp.op_str.split('#')[1], 0) + 1
     k = insl.index(ld); lo = page = None
@@ -918,7 +945,7 @@ for fa, fb in funcs:
                 tgt = jump_offsets(insl, j) or jump_adr_offsets(insl, j)
                 if not tgt and tail_call(insl, j): tailcalls.add(ins.address); continue
                 if not tgt and (far := jump_bytes_far(insl, j)): jumps[ins.address] = far; continue
-                if not tgt: tgt = jump_offsets(insl, j, copy_first=True, far_base=True)   # the index copied before the check (check_before_copy) or the base set far back, only where every other form failed
+                if not tgt: tgt = jump_offsets(insl, j, copy_first=True, far_base=True)   # the index copied before the check (check_before_copy), the base set far back, or the index zero-extended with and xI,xS,#0xffffffff, only where every other form failed
                 if not tgt: tgt = jump_masked_pred(insl, j)   # the check on a masked copy made in the block, the index masked in the block that branches to it
                 assert tgt, f'jump table {ins.address:x}'
                 tabjumps[ins.address] = tgt; continue

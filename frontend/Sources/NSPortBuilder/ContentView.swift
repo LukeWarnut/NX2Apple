@@ -9,6 +9,8 @@ import SwiftUI
 // case) the folder is passed straight to the script; otherwise a staging folder of
 // symlinks is built and the script's --work-dir keeps the real build folder next to
 // the base game.
+// A Switch 2 dump is the other source: a folder of exefs/ and romfs/ (Switch2Dump.swift).
+// It is already decrypted, so the build passes --switch2 and does not ask for prod.keys.
 
 // MARK: - Pieces
 
@@ -90,6 +92,8 @@ final class BuildModel: ObservableObject {
         Slot(id: "dlc", kind: .dlc, title: "data.dlc", optional: true),
         Slot(id: "keys", kind: .keys, title: "data.keys", optional: false),
     ]
+    /// A Switch 2 dump chosen instead of NSP files. Set, the base game and prod.keys are not required.
+    @Published var switch2: Switch2Dump?
     @Published var outDir = UserDefaults.standard.string(forKey: "buildOutputDirectory") ?? "" {
         didSet { UserDefaults.standard.set(outDir, forKey: "buildOutputDirectory") }
     }
@@ -291,6 +295,15 @@ final class BuildModel: ObservableObject {
         let script = dir + "/" + buildScript
         guard let text = try? String(contentsOfFile: script, encoding: .utf8) else { return false }
         return text.contains("'--work-dir'") || text.contains("\"--work-dir\"")
+    }
+
+    /// Whether the checkout's build script can take a Switch 2 dump (`--switch2`). An older
+    /// checkout stops with "unrecognized arguments" if the app passes it, so the button stays off
+    /// and says why until the repository is updated.
+    nonisolated static func repoSupportsSwitch2(_ dir: String) -> Bool {
+        let script = dir + "/" + buildScript
+        guard let text = try? String(contentsOfFile: script, encoding: .utf8) else { return false }
+        return text.contains("'--switch2'") || text.contains("\"--switch2\"")
     }
 
     nonisolated static func findRepo() -> String {
@@ -862,6 +875,15 @@ final class BuildModel: ObservableObject {
     /// Subfolders are scanned too — a dump usually arrives as 本体/ 更新/ DLC/ folders —
     /// pruning the build folders this pipeline itself writes so a rescan is not slow.
     func scan(folder: String) {
+        if let dump = Switch2Dump.find(in: folder) {
+            switch2 = dump
+            gameDir = dump.source
+            var cleared = slots
+            for i in cleared.indices { cleared[i].paths = []; cleared[i].problem = "" }
+            slots = cleared
+            return
+        }
+        switch2 = nil
         gameDir = folder
         let found = Self.classify(Self.inputFiles(in: folder))
         updateSlot("base") { $0.paths = found.base.map { [$0] } ?? []; $0.problem = found.base == nil ? "data.noBase" : "" }
@@ -955,6 +977,7 @@ final class BuildModel: ObservableObject {
         case .keys: p.allowedFileTypes = ["keys"]
         }
         guard p.runModal() == .OK, !p.urls.isEmpty else { return }
+        switch2 = nil   // a picked NSP replaces a Switch 2 dump
         let id = kind == .base ? "base" : kind == .update ? "update" : kind == .dlc ? "dlc" : "keys"
         let picked = p.urls.map(\.path)
         updateSlot(id) { s in
@@ -978,7 +1001,26 @@ final class BuildModel: ObservableObject {
     /// A clone has .git; a GitHub "Download ZIP" copy does not (everything builds, but there is
     /// nothing to fetch or pull — the update buttons hide and the note says to re-download instead).
     var repoIsGit: Bool { FileManager.default.fileExists(atPath: repoPath + "/.git") }
-    var canBuild: Bool { repoOK && slot("base").ok && slot("keys").ok && allDepsPresent && !running }
+    var canBuild: Bool {
+        guard repoOK && allDepsPresent && !running else { return false }
+        if switch2 != nil { return Self.repoSupportsSwitch2(repoPath) }
+        return slot("base").ok && slot("keys").ok
+    }
+
+    /// The line under a chosen Switch 2 dump: the name, the package version, the display version, how much DLC.
+    var switch2Detail: String {
+        guard let d = switch2 else { return "" }
+        var parts: [String] = []
+        if !d.name.isEmpty { parts.append(d.name) }
+        else { parts.append((d.source as NSString).lastPathComponent) }
+        if !d.version.isEmpty { parts.append(d.version) }
+        if !d.display.isEmpty { parts.append(d.display) }
+        if d.dlcCount > 0 { parts.append(String(format: t("data.switch2dlc"), d.dlcCount)) }
+        if let id = d.titleID { parts.append(String(format: "%016llX", id)) }
+        return parts.joined(separator: " · ")
+    }
+
+    func clearSwitch2() { switch2 = nil; gameDir = "" }
 
     // MARK: Build
 
@@ -1003,51 +1045,68 @@ final class BuildModel: ObservableObject {
             return
         }
 
+        // A Switch 2 dump is already decrypted. The script links exefs/ and romfs/ (--switch2);
+        // there is no NSP folder and no prod.keys. An older checkout has no --switch2.
+        let dump = switch2
+        if dump != nil && !Self.repoSupportsSwitch2(repoPath) {
+            fail(t("msg.noSwitch2"))
+            return
+        }
+
         // One folder when everything lives together; otherwise a staging folder of symlinks. A folder
         // that holds other games too (a ROMs folder with one file per game) is staged as well: the
         // script takes one game per folder and refuses one with several ("more than one game in the
         // folder"), even when only the base game was picked (issue #58; ufooer's PR #31).
-        let baseDir = (basePath as NSString).deletingLastPathComponent
-        let allPaths = [basePath, updatePath] + dlcPaths
-        let dirs = Set(allPaths.filter { !$0.isEmpty }.map { ($0 as NSString).deletingLastPathComponent })
-        let picked = Set(allPaths.filter { !$0.isEmpty }.map { ($0 as NSString).lastPathComponent })
-        let unpicked = ((try? FileManager.default.contentsOfDirectory(atPath: baseDir)) ?? []).filter {
-            ["nsp", "xci", "nsz", "xcz"].contains(($0 as NSString).pathExtension.lowercased()) && !picked.contains($0)
+        let baseDir: String
+        var inputDir: String
+        let tidHex: String
+        if let dump {
+            baseDir = dump.root
+            inputDir = dump.root
+            tidHex = dump.titleID.map { String(format: "%016llX", $0) } ?? "game"
+            staging = nil
+        } else {
+            baseDir = (basePath as NSString).deletingLastPathComponent
+            let allPaths = [basePath, updatePath] + dlcPaths
+            let dirs = Set(allPaths.filter { !$0.isEmpty }.map { ($0 as NSString).deletingLastPathComponent })
+            let picked = Set(allPaths.filter { !$0.isEmpty }.map { ($0 as NSString).lastPathComponent })
+            let unpicked = ((try? FileManager.default.contentsOfDirectory(atPath: baseDir)) ?? []).filter {
+                ["nsp", "xci", "nsz", "xcz"].contains(($0 as NSString).pathExtension.lowercased()) && !picked.contains($0)
+            }
+            // Staged, the folder's own update and add-on content would be left behind, where the script
+            // used to find them unpicked: bring along those whose file name carries this game's title ID
+            // exactly as build_ipa_from_nsp.py:445 reads it: the low 12 bits are 0x000 for a base game,
+            // 0x800 for its update, and anything else is add-on content below the base.
+            var staged = allPaths
+            if let base = Self.titleID((basePath as NSString).lastPathComponent) {
+                let app = base & ~0xFFF
+                for f in unpicked {
+                    guard let tid = Self.titleID(f) else { continue }
+                    let low = tid & 0xFFF
+                    let owner = low == 0 ? tid : (low == 0x800 ? tid & ~0xFFF : (tid & ~0xFFF) - 0x1000)
+                    guard owner == app else { continue }
+                    if low == 0x800 && !updatePath.isEmpty { continue }   // the update was picked already
+                    if low != 0 && low != 0x800 && tid <= app { continue }   // add-on content sits above its base
+                    staged.append(baseDir + "/" + f)
+                }
+            }
+            inputDir = baseDir
+            if dirs.count > 1 || !unpicked.isEmpty {
+                let tmp = NSTemporaryDirectory() + "nsport-\(UUID().uuidString.prefix(8))"
+                try? FileManager.default.createDirectory(atPath: tmp, withIntermediateDirectories: true)
+                var linked = 0
+                for f in staged where !f.isEmpty {
+                    let dst = tmp + "/" + (f as NSString).lastPathComponent
+                    if (try? FileManager.default.createSymbolicLink(atPath: dst, withDestinationPath: f)) != nil { linked += 1 }
+                }
+                if linked == 0 { fail(t("msg.stagingFailed")); return }
+                staging = tmp; inputDir = tmp
+                if !unpicked.isEmpty {
+                    say(String(format: t("msg.stagedFromSharedFolder"), (basePath as NSString).lastPathComponent))
+                }
+            } else { staging = nil }
+            tidHex = Self.titleID(basePath).map { String(format: "%016llX", $0) } ?? "game"
         }
-        // Staged, the folder's own update and add-on content would be left behind, where the script
-        // used to find them unpicked: bring along those whose file name carries this game's title ID
-        // exactly as build_ipa_from_nsp.py:445 reads it: the low 12 bits are 0x000 for a base game,
-        // 0x800 for its update, and anything else is add-on content below the base.
-        var staged = allPaths
-        if let base = Self.titleID((basePath as NSString).lastPathComponent) {
-            let app = base & ~0xFFF
-            for f in unpicked {
-                guard let tid = Self.titleID(f) else { continue }
-                let low = tid & 0xFFF
-                let owner = low == 0 ? tid : (low == 0x800 ? tid & ~0xFFF : (tid & ~0xFFF) - 0x1000)
-                guard owner == app else { continue }
-                if low == 0x800 && !updatePath.isEmpty { continue }   // the update was picked already
-                if low != 0 && low != 0x800 && tid <= app { continue }   // add-on content sits above its base
-                staged.append(baseDir + "/" + f)
-            }
-        }
-        var inputDir = baseDir
-        if dirs.count > 1 || !unpicked.isEmpty {
-            let tmp = NSTemporaryDirectory() + "nsport-\(UUID().uuidString.prefix(8))"
-            try? FileManager.default.createDirectory(atPath: tmp, withIntermediateDirectories: true)
-            var linked = 0
-            for f in staged where !f.isEmpty {
-                let dst = tmp + "/" + (f as NSString).lastPathComponent
-                if (try? FileManager.default.createSymbolicLink(atPath: dst, withDestinationPath: f)) != nil { linked += 1 }
-            }
-            if linked == 0 { fail(t("msg.stagingFailed")); return }
-            staging = tmp; inputDir = tmp
-            if !unpicked.isEmpty {
-                say(String(format: t("msg.stagedFromSharedFolder"), (basePath as NSString).lastPathComponent))
-            }
-        } else { staging = nil }
-
-        let tidHex = Self.titleID(basePath).map { String(format: "%016llX", $0) } ?? "game"
         let workDir = (outDir.isEmpty ? baseDir : outDir) + "/" + tidHex + "_build"
         // This fork's --work-dir keeps the build folder (extracted files, shader cache, the romfs
         // archive) outside the NSPs' folder. An upstream checkout or an older ZIP does not have the
@@ -1061,7 +1120,7 @@ final class BuildModel: ObservableObject {
         // A compressed dump (NSZ / XCZ) needs nsz in the interpreter the build runs under; it is not
         // part of the dependency probe (most builds never see one), so install it here, once, only
         // when such a file is actually selected — otherwise the build stops with "pip install nsz".
-        let compressed = ([basePath, updatePath] + dlcPaths).contains {
+        let compressed = dump == nil && ([basePath, updatePath] + dlcPaths).contains {
             let e = ($0 as NSString).pathExtension.lowercased()
             return e == "nsz" || e == "xcz"
         }
@@ -1077,8 +1136,12 @@ final class BuildModel: ObservableObject {
                 return
             }
         }
-        var args = [repoPath + "/" + Self.buildScript, inputDir, "-k", keysPath,
-                    "--progress", "json"]
+        var args = [repoPath + "/" + Self.buildScript]
+        if let dump {
+            args += ["--switch2", dump.source, "--progress", "json"]
+        } else {
+            args += [inputDir, "-k", keysPath, "--progress", "json"]
+        }
         // A compatibility switch the player turned on: written to a small env file the pipeline
         // copies into the app bundle (main.m sets one variable per line at boot). Only for an IPA;
         // a Mac app runs on this Mac's GPU, which always has BC support.
@@ -2374,7 +2437,7 @@ struct BuilderView: View {
     private var files: some View {
         // The report's own mistake, and a reasonable one: the output folder silently decides where
         // the build cache lives, so changing it threw away a finished build. Say it under Save to, all the time.
-        group(m.t("section.files"), footnote: m.t("msg.workdirHint")) {
+        group(m.t("section.files"), footnote: (m.switch2 == nil ? "" : m.t("build.switch2Note") + " ") + m.t("msg.workdirHint")) {
             Button(action: pickFolder) {
                 row(m.t(m.gameDir.isEmpty ? "build.folderCTA" : "build.folderSelected"),
                     detail: m.gameDir.isEmpty ? m.t("build.folderNote") : m.shortPath(m.gameDir), help: m.gameDir) {
@@ -2386,14 +2449,22 @@ struct BuilderView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            ForEach(m.slots.filter { !$0.optional }, id: \.id) { s in
-                divider; slotRow(s)
-                if s.id == "keys", let keyCheck { KeyCheckLine(outcome: keyCheck, t: m.t) }
-            }
-            divider
-            disclosure(m.t("build.options"), isOpen: extrasOpen) { extrasOpen.toggle() }
-            if extrasOpen {
-                ForEach(m.slots.filter(\.optional), id: \.id) { s in divider; slotRow(s) }
+            if m.switch2 != nil {
+                divider
+                row(m.t("data.switch2"), detail: m.switch2Detail, dot: LauncherPalette.ready, help: m.switch2?.source ?? "") {
+                    Button(m.t("data.clear")) { m.clearSwitch2() }.buttonStyle(.plain)
+                        .font(.manrope(13)).foregroundStyle(.secondary)
+                }
+            } else {
+                ForEach(m.slots.filter { !$0.optional }, id: \.id) { s in
+                    divider; slotRow(s)
+                    if s.id == "keys", let keyCheck { KeyCheckLine(outcome: keyCheck, t: m.t) }
+                }
+                divider
+                disclosure(m.t("build.options"), isOpen: extrasOpen) { extrasOpen.toggle() }
+                if extrasOpen {
+                    ForEach(m.slots.filter(\.optional), id: \.id) { s in divider; slotRow(s) }
+                }
             }
             divider
             row(m.t("build.saveTo"), detail: m.outDir.isEmpty ? m.t("build.saveDefault") : m.shortPath(m.outDir), help: m.outDir) {
@@ -2403,7 +2474,8 @@ struct BuilderView: View {
                 }
             }
         }
-        .task(id: KeyCheck.Inputs(keys: m.keysPath, files: [m.basePath, m.updatePath] + m.dlcPaths)) {
+        .task(id: KeyCheck.Inputs(keys: m.switch2 == nil ? m.keysPath : "", files: m.switch2 == nil ? [m.basePath, m.updatePath] + m.dlcPaths : [])) {
+            if m.switch2 != nil { keyCheck = nil; return }
             keyCheck = await KeyCheck.runDetached(KeyCheck.Inputs(keys: m.keysPath, files: [m.basePath, m.updatePath] + m.dlcPaths))
         }
     }
@@ -2629,10 +2701,13 @@ struct BuilderView: View {
             Text(m.t("status.installFirst")).font(.manrope(13)).foregroundStyle(LauncherPalette.building)
         } else if !m.repoOK {
             Text(m.t("status.chooseRepo")).font(.manrope(13)).foregroundStyle(LauncherPalette.building)
-        } else if !m.slot("base").ok || !m.slot("keys").ok {
+        } else if m.switch2 != nil && !BuildModel.repoSupportsSwitch2(m.repoPath) {
+            Text(m.t("status.switch2Script")).font(.manrope(13)).foregroundStyle(LauncherPalette.building).lineLimit(2)
+        } else if m.switch2 == nil && (!m.slot("base").ok || !m.slot("keys").ok) {
             Text(m.t("status.needInputs")).font(.manrope(13)).foregroundStyle(.secondary)
         } else {
-            Text(String(format: m.t("status.output"), m.shortPath(m.outDir.isEmpty ? (m.basePath as NSString).deletingLastPathComponent : m.outDir)))
+            let beside = m.switch2?.root ?? (m.basePath as NSString).deletingLastPathComponent
+            Text(String(format: m.t("status.output"), m.shortPath(m.outDir.isEmpty ? beside : m.outDir)))
                 .font(.manrope(13)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
         }
     }

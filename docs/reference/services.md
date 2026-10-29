@@ -54,6 +54,27 @@ Most service calls can be found before they crash, before the first boot or the 
 - **Fix:** `hle_sf.c` takes over the SDK's HIPC client entry points (`InitializeHipcServiceResolution`, `ConnectToHipcService`, `SendSyncRequest`, `CloseClientSessionHandle` and the control requests `QueryPointerBufferSize`, `ConvertSessionToDomain`, `DuplicateSession(Ex)`): a service it serves (`olsc:u`) gets a host session, and every request on it succeeds with zeroed output, which reads as backup off for every user. Any other name is refused with a red line, as `sm` refuses a service nobody registered (`npns` was never connected). `DM_SF_TRACE=1` dumps each request.
 - **Found on:** [Animal Crossing: New Horizons](../../dm/games/01006F8002326000/README.md) (SDK 20.5.4).
 
+### Switch 2 SDK calls that open their own service sessions
+
+- **Symptom:** `[RED] sf: the game connects to service hid itself, which the host does not serve` and a null read in `nn::hid::detail::InitializeJcms` (`sdk+0x654c6c`); a null read in `nn::oe::GetGraphicsScalingParameters` (`sdk+0x517a7c`); `[RED] sf: the game connects to service aud:u itself` and `Result 0xe15` at `sdk+0x1d09b4` (`nn::audio::CreateUserClientSessionByHipc`), all in start-up.
+- **Cause:** Switch 2's SDK adds calls that talk to a service directly: the Joy-Con 2 mouse sensor (`nn::hid::*Jcms`), the graphics scale (`nn::oe::GetCurrentGraphicsScale`, `SetGraphicsScaleChangedNotificationEnabled`) and the output volume auto-tune (`nn::audio::IsDeviceOutputVolumeAutoTuneModeEnabled`, `SetDeviceOutputVolumeAutoTuneModeEnabled`). The host does not serve those services.
+- **Fix:** host versions: `hle_hid.c` has no mouse sensor (Initialize, Finalize, Start and Stop do nothing, `GetJcmsStates` returns no samples, `GetJcmsHandle` packs the npad id and type as `utility::MakeJcmsHandle` does); `hle_oe.c` reports the first graphics scale (code 10, `GetCurrentGraphicsScale` 0) and never changes it; `hle_audren.c` reports the auto-tune off. GameShare and `OutputStream` have entries of their own: [GameShare (`nn::streamplay`)](#gameshare-nnstreamplay) and [Switch 2's `OutputStream`](#switch-2s-outputstream).
+- **Found on:** Donkey Kong Bananza (Switch 2, title `040074A01BF12000`; no game profile yet).
+
+### GameShare (`nn::streamplay`)
+
+- **Symptom:** abort in `nn::streamplay::GetRequiredMemorySize` under `detail::CreateUserServiceByHipc` (`Result 0xe15`, `sdk+0x6b6440`, service `stpl:u`) in start-up.
+- **Cause:** every `nn::streamplay` call goes through a session the SDK opens itself; the host does not serve it.
+- **Fix:** `hle_streamplay.c` answers the public calls as a console nobody joins: `Initialize` succeeds and ignores its memory, `GetConnectionState` reports 0 (not connected), the connection event is bound and never signaled, every guest pad, six-axis, vibration and Jcms query returns nothing, and `OpenSessionWithMatchmakeSupport` returns `0x3d1f`, a result the SDK itself returns there without aborting. `GuestVibrationTarget` stays SDK code (it touches no service). No GameChat calls were found in Bananza's imports.
+- **Found on:** Donkey Kong Bananza (Switch 2, title `040074A01BF12000`).
+
+### Switch 2's `OutputStream`
+
+- **Symptom:** no sound from a game that plays through `nn::audio::OpenOutputStream`; the SDK's `OutputStreamImpl` opens an audio service session.
+- **Cause:** Switch 2's SDK adds `OutputStream` (frames written to a virtual output device) next to `AudioOut` and the renderer. Main's call sites give the arguments: `StreamFormat` is `{u32 sample format (1 int8, 2 int16, 3 int24, 4 int32, 5 float), u32 channels, i32 rate}`, then the capacity in frames and the free frames at which the event is signaled. `GetOutputStreamState` is 0 not open, 1 stopped, 2 started (`OutputStreamImpl +0x110`).
+- **Fix:** `hle_outstream.c` feeds the host's PCM output (`dm_pcmout_*`, the AudioUnit or the silent sink): writes are converted to PCM16 and queued in blocks of at most 5 ms, so space frees up as the device plays; a thread takes played blocks back and signals the event. `hle_audren.c` reports one virtual output device (the built-in speaker) with a 5 ms period. 24-bit samples and rates other than 48 kHz are not handled (red line).
+- **Found on:** Donkey Kong Bananza (its two call sites, `main+0x57cc2c` and `main+0x187cf50`, were not reached in the first minute; the renderer carries its sound there).
+
 ## SDK names that changed between versions
 
 ### Older SDK names for the same calls
@@ -362,6 +383,13 @@ Most service calls can be found before they crash, before the first boot or the 
 - **Fix:** `SetLayerCrop`, `DestroyLayer`, `CloseDisplay` and `vi::Finalize` are host no-ops. Also hooked: `vi::GetIndirectImageMemoryRequirement` (asked by the inline keyboard's `GetImageMemoryRequirement`, [The inline keyboard as a resident library applet](#the-inline-keyboard-as-a-resident-library-applet)); `vi::ListDisplays` (one display, "Default"; the game lists 10 into a stack buffer and does not read them, `main+0x808f08`), found from the import list before it was met.
 - **Found on:** [The Legend of Zelda: Link's Awakening](../../dm/games/01006BB00C6F0000/README.md) (SDK 8.2.0); [Super Mario 3D World + Bowser's Fury](../../dm/games/010028600EBDA000/README.md) (SDK 10: `vi::GetIndirectImageMemoryRequirement`); [The Great Ace Attorney Chronicles](../../dm/games/010036E00FB20000/README.md) (SDK 10.4.1: `vi::ListDisplays`).
 
+### vi HDR metadata calls
+
+- **Symptom:** a jump to pc=0 from `main+0x2036f8` (`nn::vi::SetLayerNextHdrContentGamutMetadata`).
+- **Cause:** Switch 2's SDK passes a layer's HDR metadata to an entry of its vi2 function table (`sdk+0x55f4f0`) that is null under the host.
+- **Fix:** `hle_vi.c` takes the five `SetLayerNextHdr…Metadata` calls as no-ops: the host window is SDR.
+- **Found on:** Donkey Kong Bananza (Switch 2, title `040074A01BF12000`; no game profile yet).
+
 ### Layer frame numbers
 
 - **Symptom:** SIGSEGV in `android::Surface::getQueuedFrameNumber` under `nn::vi::GetLatestFrameNumber`.
@@ -519,6 +547,14 @@ Most service calls can be found before they crash, before the first boot or the 
 - **Check:** 3D World's case was found by probing the engine's error code after each call (`DM_PROBE` on the instruction after `GetError`).
 - **Note:** of the games on hand, the ones that call `GetSharedFontAddress` without importing `Decode` are all Unity players (Engage, Ace Attorney Investigations Collection, Brain Memory Training Academy, Patrick's Parabox). To see which fonts a Unity game asks for, probe its name mapper's entry (`DM_PROBE=main:2390b0` on Patrick's Parabox 1.0.1; the function is the one `main` caller of `GetSharedFontLoadState`).
 - **Found on:** [Super Mario 3D World + Bowser's Fury](../../dm/games/010028600EBDA000/README.md) (SDK 10, the plain TTF); [Super Mario Bros. Wonder](../../dm/games/010015100B514000/README.md), [The Legend of Zelda: Breath of the Wild](../../dm/games/01007EF00011E000/README.md), [The Legend of Zelda: Tears of the Kingdom](../../dm/games/0100F2C0115B6000/README.md), [Pokémon Legends: Z-A](../../dm/games/0100F43008C44000/README.md) (the `Decode` importers); [Patrick's Parabox](../../dm/games/0100E44016C22000/README.md) (the blank CJK text, 1.0.1); [Captain Toad: Treasure Tracker](../../dm/games/01009BF0072D4000/README.md) (SDK 8, plain TTFs); [Fire Emblem Engage](../../dm/games/0100A6301214E000/README.md), [Ace Attorney Investigations Collection](../../dm/games/010005501E68C000/README.md), [Brain Memory Training Academy](../../dm/games/0100F5D01DA3A000/README.md) (the other Unity players); The Legend of Zelda: Echoes of Wisdom 1.1.0 (no profile).
+
+### Shared font too big for the font engine's work buffer
+
+- **Symptom:** startup crash looking up the `?` glyph (`main+0x41c930`, `ldrb w8, [x0, #0x38]`, fault address 0x38). The main `ScalableFontEngine::LoadFont` of the stand-in returns 0; each extra engine's `LoadFont` returns 201 (`0xc9`); `CheckGlyphExist('?')` is then 0 and the lookup does not test for null.
+- **Cause:** the engine's heap is the work buffer the game passed to `Initialize`. Monotype iType (what `nn::fontll` wraps) copies per-glyph tables into that heap and returns 201 when an allocation fails. Mario Tennis Aces (Demo) gives the main engine 512 KB (`main+0x41d570`, the default `0x80000`) and each sheet engine `0xc800` bytes (`main+0x41d57c`). Arial Unicode (~50,000 glyphs) fits in 512 KB and does not fit in `0xc800`. The sheet engines are the ones `CheckGlyphExist` runs on. The shared-font path does not call `Decode`; the plain TTF is already what `font_skip` serves for this SDK.
+- **Fix:** `LoadFont`, given the host's own standard stand-in, on error 201 rebuilds that engine (`Finalize`, then `Initialize` on the work buffer remembered from `Initialize`) and loads a smaller font: `DM_FONT_LL`, else `$DM_FONT_DIR/fontll.ttf`, else macOS's Arial (`/System/Library/Fonts/Supplemental/Arial.ttf`, which does fit in `0xc800`), else a built-in ASCII font (`hle_sdk16.c`, `font_ll.ttf.inc`). `GetSharedFontAddress` still returns the full stand-in, so a FreeType consumer keeps it. A game font that returns 201 is not replaced.
+- **Check:** probe the instruction after each `GetError` (`DM_PROBE=main:41ddf0,main:41de28`). The sheet engine's `x0` is 0 after the smaller font, and the `?` lookup no longer faults.
+- **Found on:** Mario Tennis Aces (Demo) 1.0.0 (SDK 4.5.0, title `01008ED00BC44000`; no profile).
 
 ### Shared fonts requested all at once
 

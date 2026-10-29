@@ -84,7 +84,8 @@ void svc_guest_range(uint8_t **base, size_t *size) { *base = g_as; *size = RESER
 enum { I_CoreMask=0, I_PriorityMask=1, I_AliasAddr=2, I_AliasSize=3, I_HeapAddr=4, I_HeapSize=5,
        I_TotalMem=6, I_UsedMem=7, I_DebuggerAttached=8, I_ResourceLimit=9, I_IdleTick=10, I_RandomEntropy=11,
        I_AslrAddr=12, I_AslrSize=13, I_StackAddr=14, I_StackSize=15, I_SysResTotal=16, I_SysResUsed=17,
-       I_ProgramId=18, I_InitProcIdRange=19, I_UserExcAddr=20, I_TotalNonSys=21, I_UsedNonSys=22, I_IsApplication=23, I_FreeThreadCount=24 };
+       I_ProgramId=18, I_InitProcIdRange=19, I_UserExcAddr=20, I_TotalNonSys=21, I_UsedNonSys=22, I_IsApplication=23, I_FreeThreadCount=24,
+       I_PageGranularity=33 };
 
 static uint8_t g_seen[256];
 
@@ -508,6 +509,11 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
         // left its main thread waiting at boot for a thread it never created (main+0x3e1ac4)
         case I_FreeThreadCount: { int thr_limit_used(void); int u = thr_limit_used(); v = u < 96 ? 96 - u : 0; break; }
         case I_UserExcAddr: { static _Alignas(0x1000) uint8_t ctx[0x1000]; v = (uint64_t)ctx; break; }   // user exception context area: newer SDKs' SetDyingMessageRegion writes to +0x1c0 (0 would write through a null pointer)
+        // Switch 2's SDK (NVN 20.5): 33 is not in the Switch 1 kernel and not documented; the name is ours, from its two uses. nn::ro::ProtectRelro, called from every module's
+        // DT_INIT, aborts with Result 0 unless the value less 1 is a mask that clears the RELRO bounds it checks (Donkey Kong Bananza: end 0x2480000; the start, 0x21f9000, is only
+        // page aligned), then makes RELRO read-only with SetMemoryPermission and SetMemoryAttribute 0x10. VammManager maps that many bytes with MapPhysicalMemory. 0 made the
+        // mask all ones and the game stopped in main's first initializer (sdk+0x159160); the 4 KB page satisfies both
+        case I_PageGranularity: v = 0x1000; break;
         default: v = 0; break;
         }
         regs[0] = 0; regs[1] = v; return 0;

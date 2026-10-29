@@ -7,7 +7,7 @@ namespace Ryujinx.Graphics.Shader.Translation
 {
     static class Ssa
     {
-        private const int GprsAndPredsCount = RegisterConsts.GprsCount + RegisterConsts.PredsCount;
+        private const int GprsAndPredsCount = RegisterConsts.GprsCount + RegisterConsts.PredKeysCount;   // nxnative: key counts, not Maxwell's register counts (RegisterConsts)
 
         private class DefMap
         {
@@ -19,7 +19,7 @@ namespace Ryujinx.Graphics.Shader.Translation
             {
                 _map = new Dictionary<Register, Operand>();
 
-                _phiMasks = new long[(RegisterConsts.TotalCount + 63) / 64];
+                _phiMasks = new long[(RegisterConsts.TotalKeysCount + 63) / 64];
             }
 
             public bool TryAddOperand(Register reg, Operand operand)
@@ -70,8 +70,8 @@ namespace Ryujinx.Graphics.Shader.Translation
 
             public LocalDefMap()
             {
-                _map = new Operand[RegisterConsts.TotalCount];
-                _uses = new int[RegisterConsts.TotalCount];
+                _map = new Operand[RegisterConsts.TotalKeysCount];
+                _uses = new int[RegisterConsts.TotalKeysCount];
             }
 
             public Operand Get(int key)
@@ -366,7 +366,7 @@ namespace Ryujinx.Graphics.Shader.Translation
             {
                 return new Register(key - RegisterConsts.GprsCount, RegisterType.Predicate);
             }
-            else /* if (key < RegisterConsts.TotalCount) */
+            else /* if (key < RegisterConsts.TotalKeysCount) */
             {
                 return new Register(key - GprsAndPredsCount, RegisterType.Flag);
             }

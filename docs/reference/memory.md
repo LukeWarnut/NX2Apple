@@ -30,6 +30,20 @@ The guest address space, heaps, pools, virtual address memory and the allocators
 - **Found on:** [Hyrule Warriors: Age of Calamity](../../dm/games/01002B00111A2000/README.md); [Monster Hunter Rise](../../dm/games/0100B04011742000/README.md); [Metroid Dread](../../dm/games/010093801237C000/README.md); [Catherine: Full Body](../../dm/games/0100BF00112C0000/README.md) (SDK 8.2.1; one boot). The source names no game for the late failures in a busy scene.
 - **Check:** probe `DM_SVC=1`'s `svc 0x1` request and the `AllocateMemoryBlock` result.
 
+### Switch 2's application pool
+
+- **Symptom:** a null read in `nnMain` (`main+0x4016bc`, called from `main+0x564b58`) right after the first shader archives load: a sead heap create for `AudioSystemHeap` (`main+0x564b48`) returned no heap.
+- **Cause:** the provisional profile gave a Switch 2 program the Switch 1 application pool (3285 MB). Its `main` sizes its heap as the pool less 64 MB (3.14 GB), and its heap plan, made for a 12 GB console, did not fit.
+- **Fix:** `profile_guess.py` gives a program whose ID starts with `04` a 9 GiB pool (`APP_POOL_SWITCH2`) and a heap region to match (`mem_reserve 0x270000000`). 9 GiB is not a measured Horizon value: it is the size with which Bananza's start-up goes on (8.94 GB heap).
+- **Found on:** Donkey Kong Bananza (Switch 2, title `040074A01BF12000`; no game profile yet).
+
+### GetInfo 33 in Switch 2's SDK
+
+- **Symptom:** `game called nn::diag abort: Result 0, call site sdk+0x159164` in `main`'s first initializer (`main+0x841aa4`, from `DT_INIT`), before `nnMain`.
+- **Cause:** `nn::ro::ProtectRelro`, which every module's `DT_INIT` calls to make RELRO read-only, asks `svcGetInfo(33, CurrentProcess)` and aborts unless the value less 1 is a mask that clears the RELRO bounds (Bananza's end is 0x2480000, its start 0x21f9000 only page aligned). 33 is not in the Switch 1 kernel and not documented; `nn::os::detail::VammManager` maps that many bytes with `MapPhysicalMemory`. The host answered 0, so the mask was all ones.
+- **Fix:** `hle_svc.c` answers 33 (`I_PageGranularity`, the name is ours) with the 4 KB page. The `SetMemoryPermission` and `SetMemoryAttribute` (0x10) calls that follow already succeed.
+- **Found on:** Donkey Kong Bananza (Switch 2, title `040074A01BF12000`; no game profile yet).
+
 ### A heap request beyond the heap region returns ResultOutOfMemory
 
 - **Symptom:** `SetHeapSize OOM: req 0x120000000 > cap 0xd0000000`, then `Break#1 reason=0` in `nninitStartup`, with a backtrace through `nn::os::SetMemoryHeapSize` (`sdk+0x967a4`).

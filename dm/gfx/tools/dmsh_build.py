@@ -13,7 +13,7 @@ import dmsh_geometry, dmsh_atomic
 DM_ROOT = os.environ.get('DM_ROOT') or os.path.expanduser('~/dm-work')   # Workspace root (game files, build outputs and run artifacts are all under it)
 HOME = os.path.expanduser('~')
 dm_dir, out = sys.argv[1:3]; want = set(sys.argv[3:]); cache_root = out
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import dmsh_chain, dmsh_fetch, dmsh_facts, dmsh_mtlcache, dmsh_vin, dmsh_pull   # translation chain version: verify the tools against the lock file first; build output goes into b-<V>/
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import shader_split as _split, dmsh_chain, dmsh_fetch, dmsh_facts, dmsh_mtlcache, dmsh_vin, dmsh_pull   # translation chain version: verify the tools against the lock file first; build output goes into b-<V>/
 _bad = dmsh_chain.check_tools()
 if _bad: sys.exit('\n'.join('[RED] translation chain tools do not match the lock file: ' + b for b in _bad) + '\n(if the tools changed, run dmsh_chain.py --update-lock and commit the lock file; if the translator just was not rebuilt, rebuild it)')
 CHAIN = dmsh_chain.version(); out = os.path.join(out, 'b-' + CHAIN)
@@ -348,7 +348,26 @@ def vertex_ab(key, code, ctl):
             struct.pack_into('<Q', a, o, 0xe24 << 52 | ((len(a) - (o + 8)) & 0xffffff) << 20 | ins & 0xfffff)
     return code[:0x30] + struct.pack('<20I', *sph) + bytes(a) + b, code[b_sph + b_len:]
 
+def nvn2_record(rec):
+    """(code area, control section) of a record whose control is Ampere NVN2 (Switch 2; shader_split.nvn2_control), else None. The record header gives both lengths
+    (+0x28 control, +0x2c code): an NVN2 code area keeps no Maxwell header to search the control magic past."""
+    nctl, ncode = struct.unpack_from('<2I', rec, 0x28)
+    code, ctl = rec[0x38:0x38 + ncode], rec[0x38 + ncode:0x38 + ncode + nctl]
+    return (code, ctl) if _split.nvn2_control(ctl) else None
+
 def job_for(key, name, rec, w):
+    if nv := nvn2_record(rec):
+        # Ampere NVN2 (Switch 2): the code area is translated whole (graphics: the SPH, zeros to +0x80, then 128-bit instructions; compute: instructions from +0), by the
+        # translator's AmpereDecoder. c1 is the code area between control +0x40 and +0x44 (Bananza: 0 or 0x100 bytes after the instructions, which end at +0x38).
+        # No VertexA part and no transform feedback layout: the 0xd0 / 0xd8-byte control has neither.
+        code, ctl = nv; stage = name[:2]
+        c1 = code[struct.unpack_from('<I', ctl, 0x40)[0]:struct.unpack_from('<I', ctl, 0x44)[0]]
+        cp = os.path.join(w, key + '.bin'); open(cp, 'wb').write(code)
+        j = {'key': key, 'stage': stage, 'code': cp, 'tex': {}, 'img': {}, 'attr': {}, 'fout': {}, 'c1': c1.hex(), 'ampere': True,
+             'debug': os.environ.get('XLATE_DEBUG', '1') != '0', 'reduced': os.environ.get('XLATE_REDUCED', '1') == '1'}
+        if key not in FACTS: j['no_facts'] = True; return j, c1
+        j.update(FACTS[key])
+        return j, c1
     ci = rec.find(bytes.fromhex('34127698')); code = rec[0x38:ci]; stage = name[:2]
     c1o, c1t = struct.unpack_from('<2I', rec, ci + 0x700)   # control segment +0x700: c1 relative to the start of the instruction area, +0x704: total length of the instruction area (c1 = what lies between the two; lengths across the whole library are 0 / 256 / 512 / 768)
     c1 = rec[0x38 + c1o:0x38 + c1t]
@@ -988,7 +1007,10 @@ def rec_of(key):   # → (package name, the shader's record)
     if name not in packs: packs[name] = records(open(os.path.join(dm_dir, name), 'rb').read())
     return name, packs[name][k]
 recs = {}
-for key in keys: recs[key] = rec_of(key); digests[key] = shader_key(key, *recs[key])
+for key in keys: recs[key] = rec_of(key)
+_nvn2 = sum(1 for key in keys if nvn2_record(recs[key][1]))
+if _nvn2: print(f'Ampere NVN2: {_nvn2} of {len(keys)} shaders (Switch 2), translated by the Ampere decoder (job_for)', flush=True)
+for key in keys: digests[key] = shader_key(key, *recs[key])
 def plain_digest(k):   # a paired pixel shader's key, also when it is not built this time
     if k in digests: return digests[k]
     return shader_key(k, *rec_of(k)) if k in loc else 'missing'

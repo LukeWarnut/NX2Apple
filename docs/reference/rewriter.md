@@ -53,6 +53,14 @@ To enroll a cut for any game's own module:
 - **Fix:** in its last pass (`far_base`), `jump_offsets` accepts `cmp xI, #N` on the index too. The earlier passes are unchanged, so modules that rewrote before come out the same.
 - **Found on:** [OCTOPATH TRAVELER](../../dm/games/010057D006492000/README.md) `main+0x1676f58` (1.0.5), the only such site in that `main`.
 
+### Index zero-extended into the table register
+
+- **Symptom:** `jump table <addr>` assertion on an offset table whose index is a zero-extend (`and x18, x8, #0xffffffff`) of the register the bounds check compares (`cmp w8, #4; b.hi; …; ldrsw x18, [x16, x18, lsl #2]; add x18, x18, x16; br x18`).
+- **Cause:** `and xI, xS, #0xffffffff` clears the top half of the index. It is a copy of `wS`, not a value mask, so the walk that records every `and` of the index as a mask never takes the `cmp wS, #N` that sizes the table. A wider `cmp xS, #N+1; b.hs` just before it would count one entry too many, and that next slot need not be a target.
+- **Fix:** on the last attempt, after the ordinary walk and `check_before_copy` have found no check, `jump_offsets` follows `and xI, xS, #0xffffffff` as a copy of `wS` and takes the nearest compare of that register, so long as nothing writes it between the compare and the `and`. The nearer compare wins, which is the `b.hi` that matches the table.
+- **Found on:** Mario Tennis Aces (Demo) 1.0.0 `main+0x388d88`, the only `br x18` in that `main`. The five targets are the case heads; the sixth table word is zero.
+- **Check:** the new walk runs only where the rewriter found no compare before, so a site that already matched is unchanged. `dm/tools/tests/test_jump_copies.py` covers the five-entry table, a write of the source between the compare and the `and`, a narrower mask, and an ordinary table on the last attempt.
+
 ### Index masked in the block that branches to the dispatch
 
 - **Symptom:** `jump table <addr>` assertion in a Unity / IL2CPP `main` whose dispatch checks a fresh mask of another register than the one it indexes with.

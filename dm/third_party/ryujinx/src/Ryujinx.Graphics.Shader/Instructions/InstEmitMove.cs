@@ -71,9 +71,15 @@ namespace Ryujinx.Graphics.Shader.Instructions
         {
             InstS2r op = context.GetOp<InstS2r>();
 
+            context.Copy(GetDest(op.Dest), EmitS2r(context, op.SReg));
+        }
+
+        // nxnative: the special register's value; Ampere numbers them the same (AmpS2r)
+        private static Operand EmitS2r(EmitterContext context, SReg sReg)
+        {
             Operand src;
 
-            switch (op.SReg)
+            switch (sReg)
             {
                 case SReg.LaneId:
                     src = EmitLoadSubgroupLaneId(context);
@@ -167,7 +173,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
                     break;
             }
 
-            context.Copy(GetDest(op.Dest), src);
+            return src;
         }
 
         private static Operand EmitLoadSubgroupLaneId(EmitterContext context)

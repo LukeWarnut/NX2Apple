@@ -222,6 +222,11 @@ HLE_FORCE("_ZN2nn2oe27GetNotificationMessageEventEv", "notification event: the h
 HLE_FORCE("_ZN2nn2oe28SetResumeNotificationEnabledEb", "resume notification switch; the host expresses resume as focus notification 15", void, h_oe_SetResumeNtf, unsigned on) { (void)on; }
 HLE_FORCE("_ZN2nn2oe42SetOperationModeChangedNotificationEnabledEb", "operation mode change notification switch", void, h_oe_SetOpModeNtf, unsigned on) { g_ntf_opmode = on & 0xff; }
 HLE_FORCE("_ZN2nn2oe44SetPerformanceModeChangedNotificationEnabledEb", "performance mode change notification switch", void, h_oe_SetPerfModeNtf, unsigned on) { g_ntf_perfmode = on & 0xff; }
+// Graphics scale (Switch 2's SDK): GetCurrentGraphicsScale maps the scale code of GetGraphicsScalingParameters (10, 20, 30) to 0, 1, 2, and that function asks the oe service,
+// which the host does not serve: Donkey Kong Bananza crashed on its null session in start-up (sdk+0x517a7c). The host reports the first scale, code 10, and never changes it,
+// so the change notification has nothing to send
+HLE_FORCE("_ZN2nn2oe23GetCurrentGraphicsScaleEv", "graphics scale: the first (code 10), fixed", int, h_oe_GetGfxScale, void) { return 0; }
+HLE_FORCE("_ZN2nn2oe42SetGraphicsScaleChangedNotificationEnabledEb", "graphics scale change notification switch: the scale never changes", void, h_oe_SetGfxScaleNtf, unsigned on) { (void)on; }
 
 // nn::settings::LanguageCode = struct { char string[8]; }, 8 bytes returned by value in x0
 HLE_FORCE("_ZN2nn2oe18GetDesiredLanguageEv", "system language query; value from DM_LANG", uint64_t, h_oe_GetLang, void) {

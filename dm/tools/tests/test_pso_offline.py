@@ -223,13 +223,33 @@ class Build(unittest.TestCase):
         with self.assertRaises(SystemExit): self.main()
 
     def test_metal_tt_failure_leaves_no_archive(self):
+        tries = []
         def fail(cmd, **kw):
             cmd = [str(c) for c in cmd]
             if '-version' in cmd or '--show-sdk-version' in cmd: return self.fake_run(cmd)
+            tries.append(cmd)
             return subprocess.CompletedProcess(cmd, 1)
         with mock.patch.object(po.subprocess, 'run', fail), mock.patch.dict(os.environ, DM_GAMES_DIR=str(self.prof.parent)), contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
             po.main(['--game', '0100000000001000', '--msl', str(self.lib), '--out', str(self.out), '--work', str(self.work)])
+        self.assertEqual(len(tries), 2)   # tried once more before reporting it
         self.assertEqual(list(self.out.glob('*.mtl4a')), [])
+
+    def test_metal_tt_failure_once_is_retried(self):   # Donkey Kong Bananza on an 8 GB Mac: the same script failed under load and built when run again
+        tries = []
+        def flaky(cmd, **kw):
+            cmd = [str(c) for c in cmd]
+            if '-version' in cmd or '--show-sdk-version' in cmd: return self.fake_run(cmd)
+            tries.append(cmd)
+            if len(tries) == 1:
+                Path(cmd[cmd.index('-o') + 1]).write_bytes(b'partial')
+                return subprocess.CompletedProcess(cmd, 1)
+            return self.fake_run(cmd)
+        out = io.StringIO()
+        with mock.patch.object(po.subprocess, 'run', flaky), mock.patch.dict(os.environ, DM_GAMES_DIR=str(self.prof.parent)), contextlib.redirect_stdout(out):
+            self.assertEqual(po.main(['--game', '0100000000001000', '--msl', str(self.lib), '--out', str(self.out), '--work', str(self.work)]), 0)
+        self.assertEqual(len(tries), 2)
+        self.assertIn('trying once more', out.getvalue())
+        self.assertEqual((self.out / 'applegpu_g18p.mtl4a').read_bytes(), b'archive applegpu_g18p')
 
 
 class Default(unittest.TestCase):

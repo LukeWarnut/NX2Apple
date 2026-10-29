@@ -442,6 +442,17 @@ HLE_FORCE("_ZN2nn5audio30GetActiveAudioOutputDeviceNameEPNS0_15AudioDeviceNameE"
 HLE_FORCE("_ZN2nn5audio19ListAudioDeviceNameEPNS0_15AudioDeviceNameEi", "output device list (SDK 12 name): 1 built-in speaker", int, h_ad_List12, char *names, int n) { return h_ad_List(names, n); }
 HLE_FORCE("_ZN2nn5audio24GetActiveAudioDeviceNameEPNS0_15AudioDeviceNameE", "active output device (SDK 12 name): built-in speaker", void, h_ad_Active12, char *name) { out_devname(name); }
 HLE_FORCE("_ZN2nn5audio41GetActiveAudioDeviceChannelCountForOutputEv", "output channel count: 2", int, h_ad_Channels, void) { return 2; }
+// Virtual output devices (Switch 2's SDK, the devices an OutputStream plays to, hle_outstream.c): the SDK asks the audio service. One, the built-in speaker.
+// VirtualDeviceProperties: the name (0x100 bytes), +0x100 u64 the device period in nanoseconds (OpenOutputStream refuses a capacity under one period), +0x108 u32
+// (not read by Donkey Kong Bananza; 2, the channel count, by its place next to the period). The period is the host renderer's 5 ms (240 frames at 48 kHz)
+HLE_FORCE("_ZN2nn5audio29GetDefaultVirtualOutputDeviceEPNS0_15AudioDeviceNameE", "default virtual output device: built-in speaker", void, h_ad_VDefault, char *name) { out_devname(name); }
+HLE_FORCE("_ZN2nn5audio24ListVirtualOutputDevicesEPNS0_15AudioDeviceNameEi", "virtual output devices: 1 built-in speaker", int, h_ad_VList, char *names, int n) { if (n <= 0 || !names) return 0; out_devname(names); return 1; }
+HLE_FORCE("_ZN2nn5audio32GetVirtualOutputDevicePropertiesEPNS0_23VirtualDevicePropertiesERKNS0_15AudioDeviceNameE", "virtual output device properties: 5 ms period, 2 channels",
+          Result, h_ad_VProps, uint8_t *p, const char *name) {
+    memset(p, 0, 0x110); strlcpy((char *)p, name && name[0] ? name : "AudioBuiltInSpeakerOutput", DEVNAME);
+    uint64_t period = 5000000; memcpy(p + 0x100, &period, 8); uint32_t ch = 2; memcpy(p + 0x108, &ch, 4);
+    return RES_OK;
+}
 // Device volume: kept and read back (DRAGON QUEST VII Reimagined reads it at boot, main+0xee8edc), not applied: the host's output has the system's own volume
 static _Atomic float g_dev_vol = 1.0f;
 HLE_FORCE("_ZN2nn5audio26SetAudioDeviceOutputVolumeEPKNS0_15AudioDeviceNameEf", "device volume; kept for the getter, not applied by the host", void, h_ad_SetVol, const char *name, float v) { (void)name; atomic_store(&g_dev_vol, v); }
@@ -450,3 +461,7 @@ HLE_FORCE("_ZN2nn5audio39AcquireAudioDeviceNotificationForOutputEPNS_2os11System
 // SDK 7 names of the two above (Super Mario Odyssey): the device-switch event and the active channel count
 HLE_FORCE("_ZN2nn5audio36AcquireAudioDeviceSwitchNotificationEPNS_2os11SystemEventE", "output device switch notification (SDK 7 name): bound, never signaled", void, h_ad_Notify7, void *ev) { hle_bind_system_event(ev, 0); }
 HLE_FORCE("_ZN2nn5audio21GetActiveChannelCountEv", "output channel count (SDK 7 name): 2", int, h_ad_Channels7, void) { return 2; }
+// Output volume auto-tune (Switch 2's SDK): both ask the audio device service, which the host does not serve; Donkey Kong Bananza's start-up aborted in the session it opened
+// (Result 0xe15, sdk+0x1d09b4). The host does not tune the volume: off, and the setter has nothing to change
+HLE_FORCE("_ZN2nn5audio39IsDeviceOutputVolumeAutoTuneModeEnabledEv", "output volume auto-tune: off", unsigned, h_ad_AutoTune, void) { return 0; }
+HLE_FORCE("_ZN2nn5audio40SetDeviceOutputVolumeAutoTuneModeEnabledEb", "output volume auto-tune switch: the host does not tune", void, h_ad_SetAutoTune, unsigned on) { (void)on; }

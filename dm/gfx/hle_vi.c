@@ -67,3 +67,10 @@ HLE_FORCE("_ZN2nn2vi12ListDisplaysEPNS0_11DisplayInfoEi", "list displays; the ho
 HLE_FORCE("_ZN2nn2vi12DestroyLayerEPNS0_5LayerE", "destroy layer; host static object", void, h_vi_DestroyLayer, void *layer) { (void)layer; }
 HLE_FORCE("_ZN2nn2vi12CloseDisplayEPNS0_7DisplayE", "close display; host static object", void, h_vi_CloseDisp, void *disp) { (void)disp; }
 HLE_FORCE("_ZN2nn2vi8FinalizeEv", "display service shutdown; the host has no vi service", void, h_vi_Fini, void) {}
+// HDR metadata for a layer's next frame (Switch 2's SDK): the SDK hands it to a vi2 function table entry that stays null under the host (Donkey Kong Bananza jumped to 0 from
+// SetLayerNextHdrContentGamutMetadata, main+0x2036f8). The host window is SDR and has nothing to tag
+HLE_FORCE("_ZN2nn2vi35SetLayerNextHdrContentGamutMetadataEPNS0_5LayerENS0_15HdrContentGamutE", "HDR content gamut: the host window is SDR", void, h_vi_HdrGamut, void *l, int g) { (void)l; (void)g; }
+HLE_FORCE("_ZN2nn2vi39SetLayerNextHdrToSdrToneMappingMetadataEPNS0_5LayerENS0_14HdrToneMappingE", "HDR to SDR tone mapping: the host window is SDR", void, h_vi_HdrTone, void *l, int m) { (void)l; (void)m; }
+HLE_FORCE("_ZN2nn2vi52SetLayerNextHdrExtendedContentLuminanceRangeMetadataEPNS0_5LayerEtt", "HDR extended luminance range: the host window is SDR", void, h_vi_HdrExtLum, void *l, unsigned lo, unsigned hi) { (void)l; (void)lo; (void)hi; }
+HLE_FORCE("_ZN2nn2vi52SetLayerNextHdrStandardContentLuminanceRangeMetadataEPNS0_5LayerEtt", "HDR standard luminance range: the host window is SDR", void, h_vi_HdrStdLum, void *l, unsigned lo, unsigned hi) { (void)l; (void)lo; (void)hi; }
+HLE_FORCE("_ZN2nn2vi39SetLayerNextHdrAdjustableBezierMetadataEPNS0_5LayerEfff", "HDR adjustable bezier: the host window is SDR", void, h_vi_HdrBezier, void *l, float a, float b, float c) { (void)l; (void)a; (void)b; (void)c; }

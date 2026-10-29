@@ -22,7 +22,8 @@ FILES += ['../third_party/ryujinx/src/Ryujinx.Graphics.Shader/' + f for f in (
     'Instructions/InstEmitSurface.cs', 'IntermediateRepresentation/TextureFlags.cs',
     'Translation/TranslationFlags.cs', 'Translation/HostCapabilities.cs',
     'Translation/TranslatorContext.cs', 'Translation/EmitterContext.cs', 'Translation/ShaderDefinitions.cs', 'CodeGen/Spirv/Instructions.cs',
-    'StructuredIr/ShaderProperties.cs', 'Translation/Optimizations/BindlessElimination.cs')]
+    'StructuredIr/ShaderProperties.cs', 'Translation/Optimizations/BindlessElimination.cs',
+    'Decoders/AmpereDecoder.cs', 'Instructions/InstEmitAmpere.cs')]   # the Ampere (Switch 2 NVN2) decoder and emitters
 INPUT_TABLES = ['shader_facts.tsv', 'shader_map.tsv', 'shader_map.tsv.conflicts.tsv', 'shader_pairs.tsv', 'pso_pairs.tsv', 'bf_want.tsv']   # in the game profile folder
 LOCK = os.path.join(HERE, 'dmsh_chain.lock'); HEADER = os.path.join(GFX, 'nvn/dmsh_chain.h')
 STAMP = 'inputs.tsv'   # in the library directory b-<V>/

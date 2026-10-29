@@ -135,7 +135,9 @@ python3 scripts/build_ipa_from_nsp.py ~/Games/MarioWonder -k ~/keys/prod.keys --
 
 `--platform` takes `ios` (the default: the IPA, or the Xcode project with `--prepare-xcode`), `mac` ([A Mac-only build for development](#a-mac-only-build-for-development)) and `mac-app` ([A Mac app](#a-mac-app)).
 
-In Spyder, open the script, fill in the settings at the top (`NSP_DIR`, `PROD_KEYS`, and optionally `PACKAGE`, `OUT_IPA`, `APP_NAME`, `BUNDLE_ID`, `LANGUAGE`, `KEEP_EXTRACTED`, `SHOW_FPS`, `PSO_GPUS`, `PLATFORM`; for a game without a profile `HEAP_CHECK`, `HEAP_CHECK_SECS`, `PROVISIONAL`), and press F5. Empty paths are asked for at run time.
+A Switch 2 dump is already decrypted exefs and romfs, not an NSP. `--switch2 DIR` (`SWITCH2` in Spyder) takes a version folder (`updates/458752` with `exefs/` and `romfs/`) or a game folder with `updates/<version>/` and `dlc/<title id>/<index>/romfs`. `--exefs` and `--romfs` name the directories when they are not laid out that way. No prod.keys. The title ID comes from `main.npdm`; the package version from the folder's number (`458752` is `v458752`); `(v3.2.0)` in a parent folder's name is the display version when there is no `control.nacp`. The build links those directories into `<id>_build/extract/` (or packs a `RomFS.img` with `--romfs-image`) and the DLC into `aoc/<index>/`, then runs the same rewrite, shaders and pack. A game with no profile is surveyed from the loose files.
+
+In Spyder, open the script, fill in the settings at the top (`NSP_DIR`, `PROD_KEYS`, and optionally `PACKAGE`, `OUT_IPA`, `APP_NAME`, `BUNDLE_ID`, `LANGUAGE`, `KEEP_EXTRACTED`, `SHOW_FPS`, `PSO_GPUS`, `PLATFORM`; for a Switch 2 dump `SWITCH2`, `EXEFS`, `ROMFS`, `ROMFS_IMAGE`; for a game without a profile `HEAP_CHECK`, `HEAP_CHECK_SECS`, `PROVISIONAL`), and press F5. Empty paths are asked for at run time.
 
 What the script does:
 1. It finds the game profile from the title ID (the `[title ID]` in the file names, or the NSP's ticket; the update by its `[vN]` tag). The update is optional: it packs the newest version in the folder (`-p` / `PACKAGE` picks another).

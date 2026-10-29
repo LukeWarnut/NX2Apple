@@ -184,5 +184,14 @@ namespace Ryujinx.Graphics.Shader.Decoders
         Vshl,
         Vshr,
         Xmad,
+
+        // nxnative: Ampere (NVN2) instructions (AmpereDecoder). Every name from AmpereFirst on is Ampere (InstOp.IsAmpere); the ones the decoder treats as control flow have their own
+        AmpereFirst,
+        AmpereBra = AmpereFirst,
+        AmpereBrx,
+        AmpereCall,
+        AmpereRet,
+        AmpereExit,
+        AmpereAlu,
     }
 }

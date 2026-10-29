@@ -25,6 +25,8 @@
 #   · SPK (Capcom's MT Framework, The Great Ace Attorney Chronicles): the shader package inside an ARC archive (zlib entries), code area + control section per shader, see mtarc_members and mtspk_shaders
 #   · BEA (NintendoWare Bezel Engine archives, Big Brain Academy: Brain vs. Brain): BNSH in the .bfsha entries of the archives (zstd entries), see bea_members
 #   · MGFX (MonoGame effects, Celeste): the effects in its XNB files and SpriteBatch's in main, each shader a control section and a code area, see mgfx_effect
+#   · zepto8 (PicoMix): one loose file per stage (shaders/*.vert, shaders/*.frag): u32 control length, the control section, u32 code length, the code area,
+#       then a binding table of named uniforms and attributes, see zepto_shaders
 #   · dvdbnd (FromSoftware, Dark Souls Remastered): GLSLC outputs in the BND3 archives (DCX zlib entries) of the .bdt files, indexed by the .bhd5 beside each, see bhd5_entries and bdt_shaders
 #   · data.arc (Super Smash Bros. Ultimate, smash_arc.py): GLSLC outputs in its SSBH shader databases and BNSH in its effects and UI layouts, each of its current files (zstd) scanned, see smash_arc_jobs
 #   · PKZ (PlatinumGames, Bayonetta 3): shader objects (VSO / PSO / CSO / HSO / DSO, a control section and a code area each) in the DAT archives of the PKZ entries (Oodle Kraken, decoded by the
@@ -40,6 +42,7 @@
 #   · BERG (Snowdrop, Mario + Rabbids Sparks of Hope): shader objects in the individually zstd-compressed records of its SDF data slices, see snowdrop_shaders
 # Code area: 0x30 header + (graphics) 0x50 SPH + instructions; header magic 0x12345678 for graphics, 0x12345679 for compute. The control section starts with 0x98761234, +0x704 = code area length,
 #   +0x700 = start of the c1 constant segment within the code area; for compute +0x748 thread group xyz (u32 ×3), +0x754 shared memory bytes (checked one by one against PC reflection on D2R's 22 compute shaders).
+# Ampere NVN2 (Switch 2) keeps the same magic in a 0xd0- or 0xd8-byte control: the length is repeated at +0x30, +0x98, +0xc4 and +0xc8, the code length is at +0x44, a compute thread group is at +0x58, and +0x20 is a 16-byte hash. The code area does not start with 0x12345678 (nvn2_control).
 # Stage: BNSH uses the stage slot; BAHS uses bits 10..13 of SPH word 0 (1 vertex 2 hull 3 domain 4 geometry 5 pixel), and a compute header means compute.
 # Key = sha256(first 0x880 bytes of the control section (its own length when control +0x20 says it is shorter, see ctl_len) + code area)[:16], the same as the host's prog_get: in this game many shaders share a control section but differ in code
 #   (SecredUber's 16600 stage shaders have only 3079 distinct control sections, with 6367 cases of same control, different code), so hashing the control alone picks the wrong library.
@@ -80,9 +83,34 @@ def zstd_mod():
         except ImportError: red(f'Python {sys.version_info[0]}.{sys.version_info[1]} has no compression.zstd (3.14+): pip install backports.zstd')
     return zstd
 
+def nvn2_control(ctl):
+    """(control length, code length) of an Ampere NVN2 control section, else None. Maxwell's section is at least 0x760 bytes and stores that length at +0x20.
+    NVN2's is 0xd0 or 0xd8 bytes, the same magic: +0x04 is 0xc9, the length is repeated at +0x30, +0x98, +0xc4 and +0xc8, and the code length is at +0x44.
+    +0x08 is not one value (0xb on the 0xd8 sections, 0 or 2 on the 0xd0 sections). +0x20 is a 16-byte hash, not a length. The code area is Ampere, not a Maxwell header (0x12345678).
+    The agl / gsys shader packs (BAHS, bahs_shaders) keep a reduced form: +0x18..+0x38 (the hash among it), +0x98 and +0xc8 are 0, and only +0xc4 holds the length; the game hands NVN
+    the section as stored (Donkey Kong Bananza: 2,272 such shaders in agl_resource, gsys_resource and Shader/Project)."""
+    if len(ctl) < 0xd0 or ctl[:4] != CTL_MAGIC: return None
+    ver = struct.unpack_from('<I', ctl, 4)[0]
+    own, r98, rc4, rc8 = (struct.unpack_from('<I', ctl, o)[0] for o in (0x30, 0x98, 0xc4, 0xc8))
+    if ver != 0xc9: return None
+    if own == 0 and r98 == 0 and rc8 == 0: own = rc4   # the reduced form
+    elif r98 != own or rc8 != own: return None
+    if not (0x40 <= own < 0x760) or own != len(ctl) or rc4 != own: return None
+    ncode = struct.unpack_from('<I', ctl, 0x44)[0]
+    if not ncode or ncode >= (1 << 24): return None
+    return own, ncode
+
+def nvn2_group(ctl):
+    """Thread group of an Ampere NVN2 compute control: u32 x, y, z at +0x58. Graphics sections store 0 there.
+    Every compute shader in Donkey Kong Bananza's effect archives is (32, 1, 1). The section has no Maxwell shared-memory word (+0x754)."""
+    return struct.unpack_from('<3I', ctl, 0x58)
+
 def ctl_len(ctl):
     """Number of control bytes in the key: control +0x20 holds the section's own length. Every control section of Mario, Fire Emblem Engage, Metroid Dread and 13 Sentinels is at least 0x880 bytes, so the first 0x880 are used;
-    SDK 10's Super Mario 3D World + Bowser's Fury has 2,888 that are only 0x850 bytes (the bfsha in ShaderData, 6 layouts), with other data right after them, so only their own length is used (the same as the host's keys_hash)"""
+    SDK 10's Super Mario 3D World + Bowser's Fury has 2,888 that are only 0x850 bytes (the bfsha in ShaderData, 6 layouts), with other data right after them, so only their own length is used (the same as the host's keys_hash).
+    An Ampere NVN2 section is taken whole (nvn2_control): hashing 0x880 bytes would run off its end."""
+    nv = nvn2_control(ctl)
+    if nv: return nv[0]
     n = struct.unpack_from('<I', ctl, 0x20)[0]
     return n if 0x760 <= n < 0x880 else 0x880
 
@@ -99,6 +127,10 @@ def same_shader(a, b):
 
 def check(where, st, ctl, code):
     """control section and code area consistent; returns the reason if not"""
+    nv = nvn2_control(ctl)
+    if nv:
+        if nv[1] != len(code): return 'control +0x44 does not match the code area length'
+        return None   # the stage is the BNSH slot; the code area is Ampere, with no Maxwell header to check
     if ctl[:4] != CTL_MAGIC or len(ctl) < ctl_len(ctl): return 'bad control section'
     # a compute code area may have no header (SDK 10's Super Mario 3D World + Bowser's Fury and D2R: instructions start at +0; dmsh_build strips only a 0x12345679 header)
     if st == 'cs' and code[:4] in (CS_MAGIC, GFX_MAGIC) and code[:4] != CS_MAGIC or st != 'cs' and code[:4] != GFX_MAGIC: return 'code area header magic does not match the stage'
@@ -128,7 +160,18 @@ def bahs_shaders(d, label):
     out = []
     for a in range(0, region - 16, 4):
         off, z, csz, rel = struct.unpack_from('<IIIi', d, a)
-        if z or not (csz in (0x880, 0x88c) or 0x760 <= csz < 0x880) or off % 0x100: continue   # control length: Mario 0x880 / 0x88c, 3D World's BAHS version 9 0x848
+        if z or off % 0x100: continue
+        if csz in (0xd0, 0xd8):   # Ampere NVN2 (Switch 2): the 0xd0 / 0xd8-byte control in its reduced form (nvn2_control); the code area has no header to tell the stage, the record does
+            c = a + rel
+            if c < 0 or c + csz > region or a < 0x10: continue
+            ctl = d[c:c + csz]; nv = nvn2_control(ctl)
+            if not nv or off + nv[1] > rsz: continue
+            st = BAHS_KIND.get(struct.unpack_from('<I', d, a - 0xc)[0])   # the binary record holding the entry: u32 record size, u32 kind (bahs_variations), two u32, the entry
+            code = d[region + off:region + off + nv[1]]
+            if not st or st != 'cs' and SPH_STAGE.get(struct.unpack_from('<I', code, 0)[0] >> 10 & 0xf) != st: continue   # a graphics SPH at +0 agrees with the kind
+            out.append((f'{label}#BAHS@{a:#x}', st, ctl, code))
+            continue
+        if not (csz in (0x880, 0x88c) or 0x760 <= csz < 0x880): continue   # control length: Mario 0x880 / 0x88c, 3D World's BAHS version 9 0x848
         c = a + rel
         if c < 0 or c + csz > region or d[c:c + 4] != CTL_MAGIC: continue
         n = struct.unpack_from('<I', d, c + 0x704)[0]
@@ -140,6 +183,7 @@ def bahs_shaders(d, label):
     bahs_variations(d, label, [o[0] for o in out])
     return out
 
+BAHS_KIND = {0: 'vs', 1: 'ps', 3: 'cs'}   # binary record kind → stage (bahs_variations' layout)
 BAHS_VAR = {}   # BAHS entry label → the program variation it belongs to (bahs_variations; var_pairs pairs by it)
 def bahs_variations(d, label, entries):
     """The variations of an agl BAHS file's programs, for var_pairs. The table area holds a binary array (u32 byte size, u32 count, then per binary a record: u32 record size, u32 kind
@@ -1927,10 +1971,47 @@ def unity_text_glslc(x, base):
         if b'\x91\x68\x86\x19' in b: out += glslc_shaders(b, f'{base}#{name}', need=False)
     return out
 
+def zepto_tail(d, p):
+    """The binding table after a zepto8 shader's code (PicoMix 1.0.1, main+0x45558): kind 0 ends it; kind 1 is three bytes then a name (a uniform or sampler);
+    kind 2 is one byte then a name (an attribute). The name's first byte is the last of those, and an empty name is that byte being 0. → True when the table consumes the file"""
+    while p < len(d):
+        kind = d[p]
+        if kind == 0: return p + 1 == len(d)
+        if kind not in (1, 2) or p + (5 if kind == 1 else 3) > len(d): return False
+        p += 5 if kind == 1 else 3
+        if d[p - 1] == 0: continue   # the 0 was the name's first byte, already consumed
+        z = d.find(b'\0', p)
+        if z < 0: return False
+        p = z + 1
+    return False
+
+def zepto_shaders(d, label):
+    """A zepto8 shader file (PicoMix: shaders/*.vert and shaders/*.frag, one stage each): u32 control length, the control section, u32 code length, the code area, then the binding table (zepto_tail).
+    The game copies the first word's bytes (main+0x454d8 on PicoMix 1.0.1) and the code word's bytes (main+0x45500). That copied length can differ from control +0x20: fantasy_01.frag and
+    fantasy_02.frag store bytes past the section's own length, and fantasy.frag's header counts 0x80 bytes the file does not store. The host hashes the first 0x880 when +0x20 is at least 0x880,
+    and the copy holds them. The table names the uniforms and attributes the engine binds. One stage per file, so vertex and pixel shaders are paired as single-stage programs (separable_pairs).
+    A file that is not this layout is left alone"""
+    if len(d) < 0x760 + 8 + 0x80: return []
+    nctl = struct.unpack_from('<I', d, 0)[0]
+    if nctl < 0x760 or nctl + 8 > len(d) or d[4:8] != CTL_MAGIC: return []
+    own = struct.unpack_from('<I', d, 0x24)[0]
+    if own < 0x760 or nctl < (own if own < 0x880 else 0x880): return []   # the copy must hold every byte the host hashes (ctl_len)
+    ncode = struct.unpack_from('<I', d, 4 + nctl)[0]
+    code_at = 8 + nctl
+    if ncode < 0x80 or code_at + ncode >= len(d) or struct.unpack_from('<I', d, 0x708)[0] != ncode: return []
+    if d[code_at:code_at + 4] not in (GFX_MAGIC, CS_MAGIC) or not zepto_tail(d, code_at + ncode): return []
+    ctl, code = d[4:4 + nctl], d[code_at:code_at + ncode]
+    st = 'cs' if code[:4] == CS_MAGIC else sph_stage(code)
+    if st is None: red(f'{label}: zepto8 shader has an unknown SPH stage')
+    why = check(label, st, ctl, code)
+    if why: red(f'{label}: zepto8 shader ({st}): {why}')
+    return [(f'{label}#ZEPTO@', st, ctl, code)]
+
 def scan_blob(d, label, out):
     if d[:4] == b'HCPS': out.extend(hcps_shaders(d, 0, label)); return
     for m in re.finditer(b'SLCT\x03\x10\0\0', d): out.extend(slct_shaders(d, m.start(), label))
     if d[:4] == b'Yaz0': d = yaz0(d)
+    if shaders := zepto_shaders(d, label): out.extend(shaders); return
     if d[:4] == b'SARC':
         for nm, m in sarc_members(d): scan_blob(m, f'{label}/{nm}', out)
         return
@@ -1959,10 +2040,10 @@ def ps_inputs(code):
     """Generic attributes a pixel shader reads: SPH words 6–13 are the input map, 8 bits for each of the 32 attributes (Ryujinx ShaderHeader.ImapTypes), non-zero = read; the translated MSL inputs are exactly user(locn<attribute>)"""
     return {i for i in range(32) if struct.unpack_from('<I', code, 0x30 + 4 * (6 + (i >> 2)))[0] >> ((i & 3) * 8) & 0xff}
 
-SINGLE_STAGE = ('#GLSLC@', '#UE', '#MTSPK@', '#MGFX@', '#NLG', '#PGSO', '#RAW@', '#TFXO@', '#NEEDLE@', '#SNOWDROP@')   # sources whose every shader is a program of one stage: GLSLC outputs, Unreal's shader records, MT Framework's shader package (BNSH variations, Unity programs, MSHD and SDF pair theirs);
+SINGLE_STAGE = ('#GLSLC@', '#UE', '#MTSPK@', '#MGFX@', '#NLG', '#PGSO', '#RAW@', '#TFXO@', '#NEEDLE@', '#SNOWDROP@', '#ZEPTO@')   # sources whose every shader is a program of one stage: GLSLC outputs, Unreal's shader records, MT Framework's shader package (BNSH variations, Unity programs, MSHD and SDF pair theirs);
 # MonoGame's effects, whose passes may name no vertex shader and keep the one bound (Celeste: 10 of its 13 effects draw through SpriteBatch's vertex shader, which is in main); Next Level Games'
 # archives (Luigi's Mansion 3 makes 5,317 programs of one stage each at boot); PlatinumGames' shader objects (Bayonetta 3: one stage each, pg_shader); control sections loose in main
-# (Advance Wars 1+2: Re-Boot Camp's Bink shaders, raw_shaders), which no file pairs; and YEBIS's effect file (tfxo_shaders)
+# (Advance Wars 1+2: Re-Boot Camp's Bink shaders, raw_shaders), which no file pairs; YEBIS's effect file (tfxo_shaders); and zepto8's shader files (PicoMix, zepto_shaders)
 def separable_pairs(keys):
     """Single-stage programs (13 Sentinels: each GLSLC output becomes a program with one stage, and BindProgram's stage bits combine vertex and pixel programs per draw; Unreal combines its shaders per draw
     from the pipeline state) have their real pairs only at draw time. vs_pad uses only the union of the locations the paired pixel shaders read, so every single-stage vertex shader is paired with
@@ -2095,7 +2176,9 @@ def scan_file_in(args):
             d = head_d if len(head_d) >= struct.unpack_from('<I', d, 10)[0] else xnb_decompress(d)
         else:
             d = xnb_decompress(d)
-    if d[:8] == b'UnityFS\0' or (d[8:11] == b'\0\0\0' and __import__('unityfs').is_serialized(d)):
+    if zepto := zepto_shaders(d, '/' + rel):   # loose .vert / .frag (PicoMix): no BNSH, GLSLC or other container magic, so the test below would leave them out
+        found += zepto
+    elif d[:8] == b'UnityFS\0' or (d[8:11] == b'\0\0\0' and __import__('unityfs').is_serialized(d)):
         import unityfs
         try: unity_shaders(d, '/' + rel, found, trees if not TREES else dict(TREES))
         except unityfs.NoTree: return rel, {}, set(), 'defer'
@@ -2221,9 +2304,14 @@ def main():
         if rec.count(b'BTCDBTCD') != 1: red(f'key {key}: the record separator appears inside the record')
         rows.append((name, len(recs[name]), STAGE_NAME[st], key, where)); recs[name].append(bytes(rec)); stat[st] += 1
         if st == 'cs':
-            x, y, z = struct.unpack_from('<3I', ctl, 0x748); sh = struct.unpack_from('<I', ctl, 0x754)[0]
-            if not x * y * z: red(f'compute shader {key}: control +0x748 thread group is 0 ({where})')
+            if nvn2_control(ctl):
+                x, y, z = nvn2_group(ctl); sh = 0   # no shared-memory word in the 0xd0 / 0xd8 section
+            else:
+                x, y, z = struct.unpack_from('<3I', ctl, 0x748); sh = struct.unpack_from('<I', ctl, 0x754)[0]
+            if not x * y * z: red(f'compute shader {key}: thread group is 0 ({where})')
             facts[key] = {'local': [x, y, z], 'shared': (sh + 15) // 16 * 16}
+    nvn2 = [ctl for _w, _st, ctl, _c in keys.values() if nvn2_control(ctl)]
+    if nvn2: print(f'Ampere NVN2: {len(nvn2)} shaders (control section {nvn2_control(nvn2[0])[0]:#x} bytes, code length at +0x44)', flush=True)
     for name, rr in recs.items():
         with open(os.path.join(pkg, name), 'wb') as f: f.write(b''.join(rr))
     with open(mapout, 'w') as f:
@@ -2233,6 +2321,7 @@ def main():
                                             ('MT Framework SPK', any('#MTSPK@' in r[4] for r in rows)), ('MonoGame MGFX', any('#MGFX@' in r[4] for r in rows)),
                                             ('PlatinumGames shader objects', any('#PGSO' in r[4] for r in rows)),
                                             ('Snowdrop shader objects', any('#SNOWDROP@' in r[4] for r in rows)),
+                                            ('zepto8 shader files', any('#ZEPTO@' in r[4] for r in rows)),
                                             ('Unreal Engine shader code archives', any('#UE' in r[4] for r in rows))) if hit)
         f.write(f'# kind: evidence  {NOTE} ({kinds} in RomFS + main) → control section + code area keys (dm/gfx/tools/shader_split.py)\n')
         f.write('# column 5 records where each key first appears; this game has no PC version to pair with\n')

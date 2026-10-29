@@ -366,6 +366,20 @@ Games read this count as a position in their own command memory and size their h
 - **Fix:** the reported version follows the SDK (`hle_nvn.c` `nvn_api`: 53.313 for SDK 10 and older, 55.15 for later ones, Mario's requirement); the profile key `device_api` overrides it. NVN 53 also brings `nvnQueueAcquireTexture` (the older window acquire: the queue waits instead of a sync object), `nvnSamplerCompare` and the debug group calls (no-ops).
 - **Found on:** [Super Mario 3D World + Bowser's Fury](../../dm/games/010028600EBDA000/README.md) (SDK 10); [Super Mario Bros. Wonder](../../dm/games/010015100B514000/README.md) (needs 55.15).
 
+### NVN2's API version and entry points
+
+- **Symptom:** a null read at `main+0x67ed78` in `nnMain` (the display object never created), after `[RED] NVN address lookup of an unknown name:` for 197 names (ray tracing, mesh shaders, shading-rate images, queue builders); with that fixed, a jump to pc=0 from `main+0x724080` (`nvnQueueBuilderSetPrimaryQueue`).
+- **Cause:** a Switch 2 program is written for NVN2. It requires API major 231 and minor ≥ 30 (`main+0x5c61a4`) and on the host's 55.15 skips creating its device. On NVN2 every one of those names exists, so the game calls them without checking the pointer, and the host returned null for each.
+- **Fix:** `hle_nvn.c` counts lookups of entry points only NVN2 has (`nvn2_only`: acceleration structures, mesh tasks, shading rate, ray dispatch; NVN's loader fetches every name before the device is made) and then reports 231.30 (`nvn_api`; `DM_NVN_API` and `device_api` still override). The 197 names joined `dm/gfx/nvn/names.txt` after the NVN1 names (thunks regenerated with `gen_protos.py`), so without an implementation they reach the red-reporting stub, which returns 0. NVN2's program builder has its own entry: [NVN2's program builder](#nvn2s-program-builder).
+- **Found on:** Donkey Kong Bananza (Switch 2, title `040074A01BF12000`; no game profile yet).
+
+### NVN2's program builder
+
+- **Symptom:** `[RED] NVN unimplemented function called: nvnProgramBuilderSetDefaults` (then `SetDevice`, `SetShaders`, `nvnProgramInitializeFromBuilder`) and later `[RED] program has no vertex shader`: a black screen with a few draws a frame.
+- **Cause:** NVN2 makes programs with a builder: the game fills one on its stack and calls `nvnProgramInitializeFromBuilder` instead of `nvnProgramInitialize` + `nvnProgramSetShaders`. Its `NVNshaderData` is the 16-byte NVN1 one.
+- **Fix:** `hle_nvn.c` keeps the device, count and shader array pointer in the builder (`prog_builder_t`) and `nvnProgramInitializeFromBuilder` runs the host's Initialize and SetShaders, so keys, the shader map and the replay layer are unchanged. The array is kept by pointer: the game builds and initializes in one frame (`main+0x126264`). Sample shading, debug hashes, subroutine linkage and ray tracing are not kept. `nvnQueueBuilderSetPrimaryQueue`, `nvnCommandBufferSetComputeOverlapMode`, `SetGeometryProcessingMode` and `SetRecordingMode` do nothing (one Metal queue; commands record and replay the same in every mode).
+- **Found on:** Donkey Kong Bananza (Switch 2, title `040074A01BF12000`; no game profile yet).
+
 ### Newest GPU code version reported by the driver
 
 - **Symptom:** null read at `main+0xb8462c` right after the first two textures, called from `main+0x670eb0` (Bayonetta 3), or cleanup crashes at `main+0x9c0d1c` after shader initialization fails (ASTRAL CHAIN).

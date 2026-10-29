@@ -67,7 +67,8 @@ namespace Ryujinx.Graphics.Shader.Translation
             _stagePrefix = GetShaderStagePrefix(stage);
 
             _cbSlotToBindingMap = new SetBindingPair[18];
-            _sbSlotToBindingMap = new SetBindingPair[16];
+            // nxnative: 32 storage buffers (the written mask is a uint). Maxwell NVN has 16 per stage; Switch 2 NVN2 compute programs address more (Donkey Kong Bananza: 17 in c[0] 0x60-0x1e0)
+            _sbSlotToBindingMap = new SetBindingPair[32];
             _cbSlotToBindingMap.AsSpan().Fill(new(-1, -1));
             _sbSlotToBindingMap.AsSpan().Fill(new(-1, -1));
 

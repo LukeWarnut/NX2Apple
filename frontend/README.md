@@ -19,6 +19,10 @@ writes them as PNG (from a copy of your library, with example paths), and
    pick the base game and `prod.keys` separately. Dropping NSP, NSZ or XCI files,
    a folder or `prod.keys` onto the page does the same: they are sorted into base
    game, update and DLC by the title ID in their names, as a chosen folder is.
+   A Switch 2 dump is the other kind of folder: `exefs/` and `romfs/` (a version
+   folder such as `updates/458752`, or the game folder that holds `updates/` and
+   `dlc/`). It is already decrypted, so `prod.keys` is not asked for, and DLC
+   beside `updates/` is included.
 2. Add an update or DLC under **Updates & add-on content** when needed.
 3. Choose **This Mac** or **iPhone / iPad**, then **Build game**.
 

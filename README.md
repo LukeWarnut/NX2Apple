@@ -299,6 +299,14 @@ Where to put it is up to you; you pass the path with `-k`:
 python3 scripts/build_ipa_from_nsp.py ~/Games/Hades2 -k ~/keys/prod.keys
 ```
 
+A Switch 2 dump that is already decrypted — `exefs/` and `romfs/`, not an NSP — does not use `prod.keys`. `--switch2` takes the version folder, or the game folder when it has `updates/<version>/` and `dlc/<title id>/`:
+
+```bash
+python3 scripts/build_ipa_from_nsp.py --switch2 "/path/to/Game (v3.2.0)/updates/458752" --platform mac
+```
+
+DLC beside `updates/` is picked up on its own. `--exefs` and `--romfs` name the two directories when they are not siblings. `--romfs-image` packs a `RomFS.img` instead of linking the romfs directory.
+
 How keys are dumped is documented across the Switch homebrew community (Lockpick_RCM from a
 hacked console is the usual route); this repository does not cover that step and ships none of
 it. Two practical notes from real dumps:

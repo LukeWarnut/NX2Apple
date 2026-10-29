@@ -18,7 +18,8 @@ from nso_asm import ADRP, ADDI, ADDR, B, BLR, BR, NOP
 tree = ast.parse((TOOLS / 'patch_nso.py').read_text())
 IMG = bytearray(0x5000); tabjumps = {}; jumps = {}   # the globals the recognizers read: the module image and the jump tables resolved so far in the function
 scope = {'re': re, 'struct': struct, 'ARM64_OP_IMM': ARM64_OP_IMM, 'IMG': IMG, 'tabjumps': tabjumps, 'jumps': jumps}
-exec(compile(ast.Module(body=[n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ('num', 'copied_base', 'table_base', 'jump_masked_pred')], type_ignores=[]), str(TOOLS / 'patch_nso.py'), 'exec'), scope)
+exec(compile(ast.Module(body=[n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in
+    ('num', 'check_before_copy', 'jump_offsets', 'copied_base', 'table_base', 'table_cands', 'jump_masked_pred')], type_ignores=[]), str(TOOLS / 'patch_nso.py'), 'exec'), scope)
 
 
 def mov(dst, src, wide=True): return (0xaa0003e0 if wide else 0x2a0003e0) | src << 16 | dst
@@ -169,6 +170,61 @@ class MaskedPredecessor(unittest.TestCase):
 
     def test_no_base_no_site(self):
         self.assertIsNone(self.run_site(self.words(w0=NOP, w1=NOP)))
+
+
+def bhs(frm, to): return 0x54000002 | (((to - frm) >> 2) & 0x7ffff) << 5
+
+
+CMP_X8_5 = 0xf100151f          # cmp x8, #5
+CMP_W8_4 = 0x7100111f          # cmp w8, #4
+CMP_W18_2 = 0x71000a5f         # cmp w18, #2
+AND_X18_X8_FFFFFFFF = 0x92407d12   # and x18, x8, #0xffffffff
+AND_X18_X8_FF = 0x92401d12     # and x18, x8, #0xff
+LDRSW_X18_X16 = 0xb8b27a12     # ldrsw x18, [x16, x18, lsl #2]
+
+
+class ZeroExtendIndex(unittest.TestCase):
+    """cmp x8,#5; b.hs; cmp w8,#4; b.hi; and x18,x8,#0xffffffff; ldrsw x18,[x16,x18,lsl #2]; add x18,x18,x16; br x18.
+    The nearer compare sizes the table (five entries). A sixth slot is present and must not be read."""
+    TABLE = 0x4200
+    TARGETS = [0x40, 0x44, 0x48, 0x4c, 0x50]
+
+    def setUp(self):
+        for i, t in enumerate(self.TARGETS): struct.pack_into('<i', IMG, self.TABLE + 4 * i, t - self.TABLE)
+        struct.pack_into('<i', IMG, self.TABLE + 4 * len(self.TARGETS), 0)   # the slot cmp x8,#5; b.hs would count
+
+    def dispatch(self, **over):
+        w = [ADRP(16, 0, self.TABLE), ADDI(16, 16, self.TABLE & 0xfff), CMP_X8_5, bhs(12, 0x54), CMP_W8_4, bhi(20, 0x54),
+             AND_X18_X8_FFFFFFFF, LDRSW_X18_X16, ADDR(18, 18, 16), BR(18), NOP]
+        w += [NOP] * 6
+        for k, v in over.items(): w[int(k[1:])] = v
+        return w
+
+    def recognize(self, words, **kw):
+        md = Cs(CS_ARCH_ARM64, CS_MODE_ARM); md.detail = True
+        ins = list(md.disasm(struct.pack('<' + 'I' * len(words), *words), 0))
+        self.assertEqual(len(ins), len(words))
+        j = next(i for i, p in enumerate(ins) if p.mnemonic == 'br' and p.op_str == 'x18')
+        return scope['jump_offsets'](ins, j, **kw)
+
+    def test_last_attempt_reads_five_entries(self):
+        words = self.dispatch()
+        self.assertIsNone(self.recognize(words))
+        self.assertIsNone(self.recognize(words, copy_first=True))
+        self.assertEqual(self.recognize(words, copy_first=True, far_base=True), self.TARGETS)
+
+    def test_source_written_between_the_compare_and_the_and(self):
+        self.assertIsNone(self.recognize(self.dispatch(w5=mov(8, 0, wide=False)), copy_first=True, far_base=True))
+
+    def test_narrower_mask_is_not_a_zero_extend(self):
+        self.assertIsNone(self.recognize(self.dispatch(w6=AND_X18_X8_FF), copy_first=True, far_base=True))
+
+    def test_ordinary_table_is_unchanged_by_the_last_attempt(self):
+        words = [ADRP(16, 0, self.TABLE), ADDI(16, 16, self.TABLE & 0xfff), CMP_W18_2, bhi(12, 0x20),
+                 LDRSW_X18_X16, ADDR(18, 18, 16), BR(18), NOP]
+        for i, t in enumerate((0x1c, 0x20, 0x24)): struct.pack_into('<i', IMG, self.TABLE + 4 * i, t - self.TABLE)
+        self.assertEqual(self.recognize(words), [0x1c, 0x20, 0x24])
+        self.assertEqual(self.recognize(words, copy_first=True, far_base=True), [0x1c, 0x20, 0x24])
 
 
 if __name__ == '__main__': unittest.main()

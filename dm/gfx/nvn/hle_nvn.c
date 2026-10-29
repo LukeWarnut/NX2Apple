@@ -93,8 +93,18 @@ static void nvn_init_slots(void) {
     g_nsem = hit;
 }
 
+// A program written for Switch 2's NVN2 looks up entry points that NVN on the Switch 1 does not have: ray tracing, mesh shaders, variable-rate shading. NVN's procedure loader
+// fetches every name before the device is made, so this is known when nvnDeviceGetInteger is asked for the API version (nvn_api). Donkey Kong Bananza looks up 50 such names.
+// The NVN2 names it loads are in the name table (names.txt, after the NVN1 names): on NVN2 they always exist, so the game calls them without a null check, and a null
+// pointer jumped to 0 (nvnQueueBuilderSetPrimaryQueue, main+0x724080). Without an implementation they go to the red-reporting stub, which returns 0.
+static int g_nvn2_names;
+static int nvn2_only(const char *name) {
+    return strstr(name, "AccelerationStructure") || strstr(name, "MeshTasks") || strstr(name, "ShadingRate") || strstr(name, "DispatchRays");
+}
+
 static void *nvn_lookup(const char *name) {
     nvn_init_slots();
+    if (name && nvn2_only(name)) g_nvn2_names++;
     for (unsigned i = 0; i < NVN_NFUNC; i++)
         if (!strcmp(nvn_names[i], name)) return nvn_thunk[i];
     LOG("[RED] NVN address lookup of an unknown name: %s", name ? name : "(null)");
@@ -152,6 +162,9 @@ static void nvn_api(int api[2]) {
 #ifdef DM_GAME_NVN_API_MAJOR
     api[0] = DM_GAME_NVN_API_MAJOR; api[1] = DM_GAME_NVN_API_MINOR; LOG("[nvn] device API %d.%d (game profile device_api)", api[0], api[1]);
 #else
+    // NVN2 is API 231: Donkey Kong Bananza (Switch 2 SDK 20.5) requires major == 231 and minor >= 30 (main+0x5c61a4) and, on 55.15, made no device and read its null
+    // display object in nnMain (main+0x67ed78). 30 is the least it takes; a later program built against a newer header may ask for more (DM_NVN_API, the profile's device_api)
+    if (g_nvn2_names) { api[0] = 231; api[1] = 30; LOG("[nvn] device API %d.%d (NVN2: the game looked up %d entry points only NVN2 has)", api[0], api[1], g_nvn2_names); return; }
     int m = dm_sdk_major(); api[0] = DM_SDK_OLD(m) ? 53 : g_devinfo[0]; api[1] = DM_SDK_OLD(m) ? 313 : g_devinfo[1]; LOG("[nvn] device API %d.%d (SDK %d)", api[0], api[1], m);
 #endif
 }
@@ -596,15 +609,31 @@ static void pk_drop(const void *p) {
     pthread_mutex_unlock(&g_pk_mu);
 }
 // mapped = 1: computed only when the code area is in a registered memory pool (at SetShaders: Mario sets some programs with an unmapped address first and fills it in before the first draw)
+// Maxwell: length at control +0x20 (0x880, or the section's own length when that is 0x760..0x87f) and the code size at +0x704.
+// Ampere NVN2: a 0xd8-byte section, the length repeated at +0x30/+0x98/+0xc4/+0xc8, the code size at +0x44 (shader_split.py nvn2_control). Reading +0x704 there runs off the end.
+// The agl / gsys shader packs keep a reduced form with only +0xc4 set (+0x30, +0x98, +0xc8 are 0); taking it for Maxwell hashed 0x880 bytes and a wrong code size, so none of them was found in the map.
+int nvn_control_span(const void *control, uint32_t *nctl_out, uint32_t *ncode_out) {
+    const uint8_t *c = control; uint32_t magic = 0, ver, own, r98, rc4, rc8, nc, own20;
+    if (!c) return 0;
+    memcpy(&magic, c, 4);
+    if (magic == 0x98761234u) {
+        memcpy(&ver, c + 4, 4); memcpy(&own, c + 0x30, 4);
+        memcpy(&r98, c + 0x98, 4); memcpy(&rc4, c + 0xc4, 4); memcpy(&rc8, c + 0xc8, 4); memcpy(&nc, c + 0x44, 4);
+        if (!own && !r98 && !rc8) own = r98 = rc8 = rc4;   // the reduced form
+        if (ver == 0xc9 && own >= 0xd0 && own < 0x760 && r98 == own && rc4 == own && rc8 == own && nc && nc < (1u << 24)) {
+            *nctl_out = own; *ncode_out = nc; return 1;
+        }
+    }
+    memcpy(&nc, c + 0x704, 4); memcpy(&own20, c + 0x20, 4);
+    *nctl_out = (own20 >= 0x760 && own20 < 0x880) ? own20 : 0x880;
+    *ncode_out = nc;
+    return 1;
+}
 static int keys_hash(const NVNshaderData *sd, int mapped, uint8_t out[8]) {
-    uint32_t ncode = 0; void *mb; uint64_t mo;
-    if (!sd->control) return 0;
-    memcpy(&ncode, (const uint8_t *)sd->control + 0x704, 4);
+    uint32_t ncode = 0, nctl = 0; void *mb; uint64_t mo;
+    if (!sd->control || !nvn_control_span(sd->control, &nctl, &ncode)) return 0;
     int code = sd->data && ncode && ncode < (1u << 24);
     if (mapped && !(code && mtl_addr(sd->data, ncode, &mb, &mo))) return 0;
-    // Control +0x20 holds the section's own length: sections of at least 0x880 bytes (all of Mario's, Engage's, Dread's and 13 Sentinels') use the first 0x880; SDK 10's 3D World has 0x850-byte ones followed by other data, so only their own length is used (shader_split.py ctl_len)
-    uint32_t nctl = 0x880, own; memcpy(&own, (const uint8_t *)sd->control + 0x20, 4);
-    if (own >= 0x760 && own < 0x880) nctl = own;
     uint8_t md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256_CTX hc; CC_SHA256_Init(&hc);
     CC_SHA256_Update(&hc, sd->control, nctl);
     if (code) CC_SHA256_Update(&hc, (const void *)(uintptr_t)sd->data, ncode);
@@ -639,7 +668,7 @@ NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData 
             }
         }
         // DM_NVN_SHDUMP (debugging): keep a copy of the control section so the replay layer can save shaders missing from the map (never freed)
-        if (dump && sd[i].control) { void *c = malloc(0x880); memcpy(c, sd[i].control, 0x880); o->sd[i].control = c; }
+        if (dump && sd[i].control) { uint32_t nctl = 0, ncode = 0; nvn_control_span(sd[i].control, &nctl, &ncode); void *c = malloc(nctl); memcpy(c, sd[i].control, nctl); o->sd[i].control = c; }
     }
     OLOG("ProgramSetShaders %p n=%d data0=%#llx", (void *)p, n, n ? (unsigned long long)sd[0].data : 0ull);
     return 1;
@@ -2232,6 +2261,31 @@ NVN_NOPROTO(nvnProgramSetShadersExt, NVNboolean, NVNprogram *p, int n, const sha
     for (int i = 0; i < n; i++) { plain[i].data = sd[i].data; plain[i].control = sd[i].control; if (sd[i].ext) ONCE_LOG("ProgramSetShadersExt extension field nonzero (%#llx): unused by the host", (unsigned long long)sd[i].ext); }
     return h_nvnProgramSetShaders(p, n, plain);
 }
+
+// NVN2's program builder (Donkey Kong Bananza makes every program with it): the builder only holds what nvnProgramInitializeFromBuilder hands to Initialize + SetShaders.
+// The shader array is kept by pointer, as the game passes its own array and initializes before it goes out of scope (main sets both up on one stack frame).
+// Sample shading, debug hashes, subroutine linkage and ray tracing are not kept: the translated shaders do not use them
+typedef struct { uint32_t magic, n; NVNdevice *dev; const NVNshaderData *sd; } prog_builder_t;
+NVN_NOPROTO(nvnProgramBuilderSetDefaults, void, prog_builder_t *b) { *b = (prog_builder_t){MAGIC('P', 'R', 'B', 'D'), 0, b->dev, NULL}; }
+NVN_NOPROTO(nvnProgramBuilderSetDevice, void, prog_builder_t *b, NVNdevice *d) { b->dev = d; }
+NVN_NOPROTO(nvnProgramBuilderGetDevice, NVNdevice *, const prog_builder_t *b) { return b->dev; }
+NVN_NOPROTO(nvnProgramBuilderSetShaders, void, prog_builder_t *b, int n, const NVNshaderData *sd) { b->n = n > 0 ? (uint32_t)n : 0; b->sd = sd; }
+NVN_NOPROTO(nvnProgramBuilderGetShaders, const NVNshaderData *, const prog_builder_t *b) { return b->sd; }
+NVN_NOPROTO(nvnProgramBuilderGetShaderCount, int, const prog_builder_t *b) { return (int)b->n; }
+NVN_NOPROTO(nvnProgramBuilderSetSampleShading, void, prog_builder_t *b, int s) { (void)b; (void)s; }
+NVN_NOPROTO(nvnProgramBuilderSetDebugDataHashes, void, prog_builder_t *b, int n, const void *h) { (void)b; (void)n; (void)h; }
+NVN_NOPROTO(nvnProgramBuilderSetSubroutineLinkage, void, prog_builder_t *b, int n, const void *l) { (void)b; (void)n; (void)l; }
+NVN_NOPROTO(nvnProgramInitializeFromBuilder, NVNboolean, NVNprogram *p, const prog_builder_t *b) {
+    if (b->magic != MAGIC('P', 'R', 'B', 'D')) ONCE_LOG("[RED] ProgramInitializeFromBuilder: builder %p was not given SetDefaults", (const void *)b);
+    if (!h_nvnProgramInitialize(p, b->dev)) return 0;
+    return b->n ? h_nvnProgramSetShaders(p, (int)b->n, b->sd) : 1;
+}
+// NVN2 state with nothing to change on the host: the primary queue a queue shares with (one Metal queue serves every NVN queue), compute overlap (the host orders
+// compute by its own barriers), geometry processing and recording modes (commands are recorded and replayed the same way whatever the mode)
+NVN_NOPROTO(nvnQueueBuilderSetPrimaryQueue, void, NVNqueueBuilder *b, NVNqueue *q) { (void)b; (void)q; }
+NVN_NOPROTO(nvnCommandBufferSetComputeOverlapMode, void, NVNcommandBuffer *c, int m) { (void)c; (void)m; }
+NVN_NOPROTO(nvnCommandBufferSetGeometryProcessingMode, void, NVNcommandBuffer *c, int m) { (void)c; (void)m; }
+NVN_NOPROTO(nvnCommandBufferSetRecordingMode, void, NVNcommandBuffer *c, int m) { (void)c; (void)m; }
 
 // ---------- Commands used by newer-SDK games (SMBW): most map onto existing record formats, the replay layer is unchanged ----------
 // Singular / combined forms → plural / separate forms; state the replay layer does not have yet (conditional render, depth bounds, ...) is logged once and drawing continues (better to over-draw than to drop).

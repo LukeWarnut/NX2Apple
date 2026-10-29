@@ -195,6 +195,50 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 return context.Copy(Register(rbIndex++, RegisterType.Gpr));
             }
 
+            EmitTex(context, flags, dimensions, lodMode, imm, componentMask, Ra, Rb, count => SequentialDests(rdIndex, count), isMultisample, hasDepthCompare, hasOffset);
+        }
+
+        // nxnative: the destination registers of a Maxwell texture instruction, Rd on (stopping at RZ)
+        private static Operand[] SequentialDests(int rdIndex, int count)
+        {
+            Operand[] dests = new Operand[count];
+
+            int outputIndex = 0;
+
+            for (int i = 0; i < dests.Length; i++)
+            {
+                if (rdIndex + i >= RegisterConsts.RegisterZeroIndex)
+                {
+                    break;
+                }
+
+                dests[outputIndex++] = Register(rdIndex + i, RegisterType.Gpr);
+            }
+
+            if (outputIndex != dests.Length)
+            {
+                Array.Resize(ref dests, outputIndex);
+            }
+
+            return dests;
+        }
+
+        // nxnative: the sources come from Ra / Rb in the order they are read and the destinations from getDests (Maxwell: Ra, Rb and Rd on; Ampere: AmpTexSources and AmpTexDests)
+        private static void EmitTex(
+            EmitterContext context,
+            TextureFlags flags,
+            TexDim dimensions,
+            Lod lodMode,
+            int imm,
+            int componentMask,
+            Func<Operand> Ra,
+            Func<Operand> Rb,
+            Func<int, Operand[]> getDests,
+            bool isMultisample,
+            bool hasDepthCompare,
+            bool hasOffset,
+            int cbufSlot = TextureOperation.DefaultCbufSlot)
+        {
             SamplerType type = ConvertSamplerType(dimensions);
 
             bool isArray = type.HasFlag(SamplerType.Array);
@@ -221,7 +265,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
             {
                 // For bindless, we don't have any way to know the texture type,
                 // so we assume it's texture buffer when the sampler type is 1D, since that's more common.
-                bool isTypeBuffer = isBindless || context.TranslatorContext.GpuAccessor.QuerySamplerType(imm) == SamplerType.TextureBuffer;
+                bool isTypeBuffer = isBindless || context.TranslatorContext.GpuAccessor.QuerySamplerType(imm, cbufSlot) == SamplerType.TextureBuffer;
                 if (isTypeBuffer)
                 {
                     type = SamplerType.TextureBuffer;
@@ -315,28 +359,11 @@ namespace Ryujinx.Graphics.Shader.Instructions
             }
 
             Operand[] sources = sourcesList.ToArray();
-            Operand[] dests = new Operand[BitOperations.PopCount((uint)componentMask)];
-
-            int outputIndex = 0;
-
-            for (int i = 0; i < dests.Length; i++)
-            {
-                if (rdIndex + i >= RegisterConsts.RegisterZeroIndex)
-                {
-                    break;
-                }
-
-                dests[outputIndex++] = Register(rdIndex + i, RegisterType.Gpr);
-            }
-
-            if (outputIndex != dests.Length)
-            {
-                Array.Resize(ref dests, outputIndex);
-            }
+            Operand[] dests = getDests(BitOperations.PopCount((uint)componentMask));
 
             int handle = !isBindless ? imm : 0;
 
-            EmitTextureSample(context, type, flags, handle, componentMask, dests, sources);
+            EmitTextureSample(context, type, flags, handle, componentMask, dests, sources, cbufSlot);
         }
 
         private static void EmitTexs(
@@ -716,6 +743,24 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 return context.Copy(Register(srcB++, RegisterType.Gpr));
             }
 
+            EmitTld4(context, dimensions, component, imm, componentMask, Ra, Rb, count => SequentialDests(dest, count), offset, hasDepthCompare, isBindless);
+        }
+
+        // nxnative: see the EmitTex overload with delegates
+        private static void EmitTld4(
+            EmitterContext context,
+            TexDim dimensions,
+            TexComp component,
+            int imm,
+            int componentMask,
+            Func<Operand> Ra,
+            Func<Operand> Rb,
+            Func<int, Operand[]> getDests,
+            TexOffset offset,
+            bool hasDepthCompare,
+            bool isBindless,
+            int cbufSlot = TextureOperation.DefaultCbufSlot)
+        {
             bool isArray =
                 dimensions is TexDim.Array1d or
                 TexDim.Array2d or
@@ -799,26 +844,9 @@ namespace Ryujinx.Graphics.Shader.Instructions
             }
 
             Operand[] sources = sourcesList.ToArray();
-            Operand[] dests = new Operand[BitOperations.PopCount((uint)componentMask)];
+            Operand[] dests = getDests(BitOperations.PopCount((uint)componentMask));
 
-            int outputIndex = 0;
-
-            for (int i = 0; i < dests.Length; i++)
-            {
-                if (dest + i >= RegisterConsts.RegisterZeroIndex)
-                {
-                    break;
-                }
-
-                dests[outputIndex++] = Register(dest + i, RegisterType.Gpr);
-            }
-
-            if (outputIndex != dests.Length)
-            {
-                Array.Resize(ref dests, outputIndex);
-            }
-
-            EmitTextureSample(context, type, flags, imm, componentMask, dests, sources);
+            EmitTextureSample(context, type, flags, imm, componentMask, dests, sources, cbufSlot);
         }
 
         private static void EmitTmml(
@@ -856,6 +884,31 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 return context.Copy(Register(srcB++, RegisterType.Gpr));
             }
 
+            Operand GetDest()
+            {
+                if (dest >= RegisterConsts.RegisterZeroIndex)
+                {
+                    return null;
+                }
+
+                return Register(dest++, RegisterType.Gpr);
+            }
+
+            EmitTmml(context, dimensions, imm, componentMask, Ra, Rb, GetDest, isBindless);
+        }
+
+        // nxnative: see the EmitTex overload with delegates; GetDest gives the next destination, null when there is none
+        private static void EmitTmml(
+            EmitterContext context,
+            TexDim dimensions,
+            int imm,
+            int componentMask,
+            Func<Operand> Ra,
+            Func<Operand> Rb,
+            Func<Operand> GetDest,
+            bool isBindless,
+            int cbufSlot = TextureOperation.DefaultCbufSlot)
+        {
             TextureFlags flags = TextureFlags.None;
 
             List<Operand> sourcesList = [];
@@ -898,22 +951,12 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
             Operand[] sources = sourcesList.ToArray();
 
-            Operand GetDest()
-            {
-                if (dest >= RegisterConsts.RegisterZeroIndex)
-                {
-                    return null;
-                }
-
-                return Register(dest++, RegisterType.Gpr);
-            }
-
             SetBindingPair setAndBinding = isBindless ? default : context.ResourceManager.GetTextureOrImageBinding(
                 Instruction.Lod,
                 type,
                 TextureFormat.Unknown,
                 flags,
-                TextureOperation.DefaultCbufSlot,
+                cbufSlot,
                 imm);
 
             for (int compMask = componentMask, compIndex = 0; compMask != 0; compMask >>= 1, compIndex++)
@@ -964,6 +1007,42 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 return;
             }
 
+            EmitTxd(context, dimensions, imm, componentMask, Ra, Rb, count => SequentialDests(dest, count), hasOffset, isBindless);
+
+            Operand Ra()
+            {
+                if (srcA > RegisterConsts.RegisterZeroIndex)
+                {
+                    return Const(0);
+                }
+
+                return context.Copy(Register(srcA++, RegisterType.Gpr));
+            }
+
+            Operand Rb()
+            {
+                if (srcB > RegisterConsts.RegisterZeroIndex)
+                {
+                    return Const(0);
+                }
+
+                return context.Copy(Register(srcB++, RegisterType.Gpr));
+            }
+        }
+
+        // nxnative: see the EmitTex overload with delegates
+        private static void EmitTxd(
+            EmitterContext context,
+            TexDim dimensions,
+            int imm,
+            int componentMask,
+            Func<Operand> Ra,
+            Func<Operand> Rb,
+            Func<int, Operand[]> getDests,
+            bool hasOffset,
+            bool isBindless,
+            int cbufSlot = TextureOperation.DefaultCbufSlot)
+        {
             TextureFlags flags = TextureFlags.Derivatives;
 
             List<Operand> sourcesList = [];
@@ -1033,48 +1112,9 @@ namespace Ryujinx.Graphics.Shader.Instructions
             }
 
             Operand[] sources = sourcesList.ToArray();
-            Operand[] dests = new Operand[BitOperations.PopCount((uint)componentMask)];
+            Operand[] dests = getDests(BitOperations.PopCount((uint)componentMask));
 
-            int outputIndex = 0;
-
-            for (int i = 0; i < dests.Length; i++)
-            {
-                if (dest + i >= RegisterConsts.RegisterZeroIndex)
-                {
-                    break;
-                }
-
-                dests[outputIndex++] = Register(dest + i, RegisterType.Gpr);
-            }
-
-            if (outputIndex != dests.Length)
-            {
-                Array.Resize(ref dests, outputIndex);
-            }
-
-            EmitTextureSample(context, type, flags, imm, componentMask, dests, sources);
-
-            return;
-            
-            Operand Ra()
-            {
-                if (srcA > RegisterConsts.RegisterZeroIndex)
-                {
-                    return Const(0);
-                }
-
-                return context.Copy(Register(srcA++, RegisterType.Gpr));
-            }
-
-            Operand Rb()
-            {
-                if (srcB > RegisterConsts.RegisterZeroIndex)
-                {
-                    return Const(0);
-                }
-
-                return context.Copy(Register(srcB++, RegisterType.Gpr));
-            }
+            EmitTextureSample(context, type, flags, imm, componentMask, dests, sources, cbufSlot);
         }
 
         private static void EmitTxq(
@@ -1110,8 +1150,6 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
             sourcesList.Add(Ra());
 
-            Operand[] sources = sourcesList.ToArray();
-
             Operand GetDest()
             {
                 if (dest >= RegisterConsts.RegisterZeroIndex)
@@ -1122,6 +1160,20 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 return Register(dest++, RegisterType.Gpr);
             }
 
+            EmitTxq(context, query, imm, componentMask, sourcesList.ToArray(), GetDest, isBindless);
+        }
+
+        // nxnative: the sources (bindless handle, then the level) already read; GetDest gives the next destination, null when there is none
+        private static void EmitTxq(
+            EmitterContext context,
+            TexQuery query,
+            int imm,
+            int componentMask,
+            Operand[] sources,
+            Func<Operand> GetDest,
+            bool isBindless,
+            int cbufSlot = TextureOperation.DefaultCbufSlot)
+        {
             SamplerType type;
 
             if (isBindless)
@@ -1137,7 +1189,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
             }
             else
             {
-                type = context.TranslatorContext.GpuAccessor.QuerySamplerType(imm);
+                type = context.TranslatorContext.GpuAccessor.QuerySamplerType(imm, cbufSlot);
             }
 
             TextureFlags flags = isBindless ? TextureFlags.Bindless : TextureFlags.None;
@@ -1151,7 +1203,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
                         type,
                         TextureFormat.Unknown,
                         flags,
-                        TextureOperation.DefaultCbufSlot,
+                        cbufSlot,
                         imm);
 
                     for (int compMask = componentMask, compIndex = 0; compMask != 0; compMask >>= 1, compIndex++)
@@ -1177,7 +1229,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
                         type,
                         TextureFormat.Unknown,
                         flags,
-                        TextureOperation.DefaultCbufSlot,
+                        cbufSlot,
                         imm);
 
                     if ((componentMask & 4) != 0)
@@ -1216,14 +1268,15 @@ namespace Ryujinx.Graphics.Shader.Instructions
             int handle,
             int componentMask,
             Operand[] dests,
-            Operand[] sources)
+            Operand[] sources,
+            int cbufSlot = TextureOperation.DefaultCbufSlot)
         {
             SetBindingPair setAndBinding = flags.HasFlag(TextureFlags.Bindless) ? default : context.ResourceManager.GetTextureOrImageBinding(
                 Instruction.TextureSample,
                 type,
                 TextureFormat.Unknown,
                 flags,
-                TextureOperation.DefaultCbufSlot,
+                cbufSlot,
                 handle);
 
             context.TextureSample(type, flags, setAndBinding, componentMask, dests, sources);

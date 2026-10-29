@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 // Game files dropped on the Builds page (issue #68): NSP, NSZ and XCI files, a folder, prod.keys, in any
 // mix. They are sorted into the slots by the same classification as Choose game folder
 // (BuildModel.classify), so a drop and a picked folder never disagree about what is the update.
+// One folder that is a Switch 2 dump (exefs/ and romfs/) is taken whole, the same as choosing it.
 
 extension BuildModel {
     /// One dropped folder is the same as choosing it; anything else (files, several folders, a mix) is added to
@@ -15,6 +16,7 @@ extension BuildModel {
         }
         if paths.count == 1, isFolder(paths[0]) { scan(folder: paths[0]); return }
         let found = Self.classify(paths.flatMap { isFolder($0) ? Self.inputFiles(in: $0) : [$0] })
+        if found.anyGame { switch2 = nil }
         slots = Self.merged(slots, with: found)
         if let base = found.base { gameDir = (base as NSString).deletingLastPathComponent }
     }
