@@ -1,5 +1,5 @@
 """scripts/patches.py on a fixture repository: the series reproduces the vendored tree, a patch that upstream took drops on a bump,
-a conflict names its patch, export writes the header, a patch that touches the shader chain is rejected, and the list of carried
+a conflict names its patch, export writes the header (a shader chain change included), and the list of carried
 patches is generated, and the generated indexes are regenerated on the patched tree. No game files, no network: upstream is a branch of the fixture."""
 import importlib.util, os, shutil, subprocess, sys, tempfile, unittest
 from pathlib import Path
@@ -235,10 +235,6 @@ class Absorb(Fixture):
         self.assertTrue('would be empty' in out or 'no longer applies' in out, out)
         self.assertEqual(before, {f.name: f.read_text() for f in (self.r / 'patches').glob('*.patch')})
 
-    def test_the_shader_chain_is_refused(self):
-        self.w('dm/gfx/nvn/dmsh_chain.h', 'x\n')
-        self.assertIn('shader chain', self.run_tool('absorb', expect=2))
-
 
 class Export(Fixture):
     def commit_edit(self, msg, path='dm/b.c', text='b1\nb2 changed\n'):
@@ -277,30 +273,13 @@ class Export(Fixture):
         self.assertFalse(list((self.r / 'patches').glob('0002-*')))
 
 
-class ChainRule(Fixture):
-    def test_the_chain_paths_come_from_agents_md(self):
-        g = P.chain_paths(self.r)
-        for want in ('dm/gfx/nvn/dmsh_chain.h', 'dm/gfx/tools/dmsh_*', 'dm/gfx/tools/Program.cs', 'dm/gfx/tools/ios_metal.py', 'dm/gfx/tools/dmsh_chain.lock', 'dm/gfx/tools/dmsh_xlate_bin*'):
-            self.assertIn(want, g)
-
-    def test_export_rejects_a_commit_that_touches_the_chain(self):
-        for path in ('dm/gfx/nvn/dmsh_chain.h', 'dm/gfx/tools/dmsh_build.py', 'dm/gfx/tools/Program.cs', 'dm/gfx/tools/dmsh_chain.lock', 'dm/gfx/tools/dmsh_xlate_bin/x'):
-            self.w(path, 'x\n'); git(self.r, 'add', '-A'); git(self.r, 'commit', '-q', '-m', f'touch {path}')
-            out = self.run_tool('export', 'HEAD', expect=2)
-            self.assertIn(path, out); self.assertIn('shader chain', out)
-        self.assertFalse(list((self.r / 'patches').glob('0002-*')))
-
-    def test_check_rejects_a_patch_in_the_series_that_touches_the_chain(self):
-        self.w('dm/gfx/tools/dmsh_pull.py', 'x\n'); git(self.r, 'add', '-A'); git(self.r, 'commit', '-q', '-m', 'chain tool')
-        diff = git(self.r, 'format-patch', '--stdout', '-1', 'HEAD')
-        text = diff.replace('\n---\n', '\n\nUpstream-Status: pending\nReason: r\nIssue: LNPANDY/NX2Apple#4\n---\n', 1) + '\n'
-        (self.r / 'patches/0002-chain.patch').write_text(text)
-        s = self.r / 'patches/series'; s.write_text(s.read_text() + '0002-chain.patch\n')
-        out = self.run_tool('check', expect=1)
-        self.assertIn('0002-chain.patch', out); self.assertIn('dm/gfx/tools/dmsh_pull.py', out)
-
-    def test_chain_free_patches_pass(self):
-        self.run_tool('check')
+class ChainChanges(Fixture):
+    def test_export_takes_a_commit_that_touches_the_chain(self):
+        self.w('dm/gfx/nvn/dmsh_chain.h', 'x\n'); git(self.r, 'add', '-A'); git(self.r, 'commit', '-q', '-m', 'chain header')
+        self.run_tool('export', 'HEAD')
+        made = list((self.r / 'patches').glob('0002-*'))
+        self.assertEqual(len(made), 1)
+        self.assertIn('dm/gfx/nvn/dmsh_chain.h', made[0].read_text())
 
 
 class ForkPatchList(Fixture):

@@ -536,7 +536,19 @@ def c2_array(name, ty):
     h = int(m.group(1), 16)
     return (h & 0x3fff) * 4 if h >> 28 == 0 else None
 
-def reflect(key, stage, msl, res):
+def nvn2_cs_layout(ctl):
+    """An Ampere NVN2 compute program's c0 layout, from its control: 16-byte entries from c0 + 0x10, first one per uniform buffer read through global memory
+    (control +0xb1), then the entries counted at +0xb6 (16 bytes each, read as four words: images, by Donkey Kong Bananza's NDSR upscaler), then one per
+    storage buffer slot, as many as +0xb2 (the highest slot bound + 1), then 8-byte texture handles, as many as +0xb3. Measured on Bananza by the slots
+    the game binds before each dispatch against the c0 offsets its shaders load: e.g. +0xb1 = 1 puts storage slot 0 at 0x20 (two shaders that bind only
+    slots 0 and 1 read 0x20 and 0x30), +0xb1 = 6 storage slot 4 at 0xb0; 14 uniforms and 16 storage slots put texture handles 8, 10, 12 and 14 at
+    0x230..0x260 (+0xb3 = 15). Maxwell's fixed tables (c0 + 0x310, c2) do not apply: c0 is per program.
+    Returns (uniform pointer count, storage buffer base, texture handle base)"""
+    ubos, words, sbufs = ctl[0xb1], ctl[0xb6], ctl[0xb2]
+    sbase = 0x10 + 0x10 * (ubos + words)
+    return ubos, sbase, sbase + 0x10 * sbufs
+
+def reflect(key, stage, msl, res, nvn2_cs=None):
     """MSL argument buffer struct member → replay reflection: kind (same as nvn_refl.h) + NVN slot number + argument buffer member index"""
     body = re.search(r'struct spvDescriptorSetBuffer0\s*\{(.*?)\};', msl, re.S)
     sb_cb = {b['binding']: b for b in res['sbufs']}
@@ -548,7 +560,7 @@ def reflect(key, stage, msl, res):
         elif nm == 'support_buffer': e.update(kind='support')
         elif re.fullmatch(r'[a-z]+_c(\d+)', nm):
             n = int(re.fullmatch(r'[a-z]+_c(\d+)', nm).group(1))
-            e.update(kind='cbuf', reg=n - 3) if 3 <= n <= 16 else e.update(kind='c1' if n == 1 else 'drvcb', bank=n)
+            e.update(kind='cbuf', reg=n - 3) if 3 <= n <= 16 else e.update(kind='push') if n == 24 else e.update(kind='c1' if n == 1 else 'drvcb', bank=n)   # 24: NVN2's push constants (graphics)
         elif re.fullmatch(r'[a-z]+_s(\d+)', nm):
             e.update(kind='sbuf', index=int(re.fullmatch(r'[a-z]+_s(\d+)', nm).group(1)))
         elif decode_ubo_tex(nm[:-5] if nm.endswith('Smplr') else nm):   # bindless: the handle is in a uniform buffer (reg = uniform slot, off = byte offset)
@@ -558,6 +570,10 @@ def reflect(key, stage, msl, res):
             else: e.update(kind='tex_ubo', reg=ut[0], off=ut[1])
         elif c2_array(nm, ty) is not None:   # an array of the driver table's handles (c2_array): the replay fills element k from the slot whose c2 word is at off + 8k
             e.update(kind='samp_c2a' if nm.endswith('Smplr') else 'tex_c2a', off=c2_array(nm, ty))
+        elif nvn2_cs and (m2 := re.fullmatch(r'[a-z]+_t_cb0_([0-9A-F]+)(Smplr)?', nm)):   # Ampere NVN2 compute: a combined handle in the program's own c0 (nvn2_cs_layout)
+            off, tbase = int(m2.group(1), 16) * 4, nvn2_cs[2]
+            reg = (off - tbase) // 8 if off >= tbase and (off - tbase) % 8 == 0 else None   # below the base: the image entries, not decoded
+            e.update(kind='samp_tex' if m2.group(2) else 'tbuf' if 'texture_buffer' in ty else 'tex', reg=reg)
         elif nm.endswith('Smplr'):   # handle type 0 = texture and sampler combined in one handle: the sampler index is taken from the high bits of that texture slot's handle
             t, s, ty = decode_tex(nm[:-5]); e.update(kind='samp_id', reg=const_sampler(nm[:-5])) if ty == 3 else e.update(kind='samp', reg=s) if ty else e.update(kind='samp_tex', reg=t)
         else:
@@ -578,7 +594,11 @@ def reflect(key, stage, msl, res):
         if e['kind'] == 'sbuf':
             b = sb_sorted[e['index']] if e['index'] < len(sb_sorted) else None
             off = b['cb_offset'] * 4 if b and b['cb_slot'] == 0 else None
-            if stage == 'cs' and off is not None and 0x210 <= off < 0x310 and (off - 0x210) % 16 == 0:
+            if nvn2_cs and off is not None:   # Ampere NVN2 compute: the program's own c0 layout (nvn2_cs_layout)
+                ubos, sbase, _tbase = nvn2_cs
+                if 0x10 <= off < 0x10 + 0x10 * ubos and off % 16 == 0: e.update(kind='ubo_ptr', reg=(off - 0x10) // 16)
+                else: e['reg'] = (off - sbase) // 16 if off >= sbase and (off - sbase) % 16 == 0 else None
+            elif stage == 'cs' and off is not None and 0x210 <= off < 0x310 and (off - 0x210) % 16 == 0:
                 e.update(kind='ubo_ptr', reg=(off - 0x210) // 16)   # compute-stage uniform slot r: address at c0[0x210 + 0x10 r], read through global memory (checked against cs_lut_combine_c reading cb10[66])
             elif b and b['cb_slot'] >= 3:   # the address is in the game's own uniform buffer c[n] = uniform slot n - 3 (Monster Hunter Rise's compute shaders: c3 + 0x38); the replay reads it there
                 e.update(kind='sbuf_ubo', reg=b['cb_slot'] - 3, off=b['cb_offset'] * 4)
@@ -983,7 +1003,10 @@ def finish(key, w, j, c1):
             **({'entry_tf': 'main0_tf', 'tf_strides': [e['stride'] if e else 0 for e in j['tf']]} if j.get('tf') else {}),
             **({'entry_layer': 'main0_l', 'entry_layer_z': 'main0_lz', 'layer_from': lay} if lay else {}), **({'entry_u': 'main0_u'} if fu else {}), **({'entry_m': 'main0_m', 'uint_mask_m': fmask} if fu and fmask else {}),
             'threadgroup_size': j.get('local'), 'c1': c1.hex(), 'notes': res['notes'] + (['not in the answer table, queries use defaults'] if j.get('no_facts') else []), 'drv_reads': dr, 'drv_unfillable': unfillable(dr),
-            'bindings': reflect(key, j['stage'], src, res),
+            'bindings': reflect(key, j['stage'], src, res, nvn2_cs_layout(nv[1]) if j['stage'] == 'cs' and (nv := nvn2_record(recs[key][1])) else None),
+            **({'c0_push': 0x10 + 0x10 * nv[1][0xb1], 'c0_push_n': 0x10 * nv[1][0xb6]} if j['stage'] == 'cs' and (nv := nvn2_record(recs[key][1])) and nv[1][0xb6] else {}),   # NVN2 compute push constants in c0 (nvn2_cs_layout)
+            # the NVN2 neural upscaler (agl_ndsr.pck) uses tensor-core instructions the translator lacks (0x23C HMMA): the replay scales its input into its output instead (nvn_mtl.m upscale_standin)
+            **({'standin': 'upscale'} if j['stage'] == 'cs' and 'agl_ndsr.pck' in pc_of[key] and any('instruction 0x23C ' in n for n in res['notes']) else {}),
             'vertex_inputs': [{'location': int(m.group(2)), 'msl_type': m.group(1)} for m in re.finditer(r'(\w+)\s+\w+\s*\[\[attribute\((\d+)\)\]\]', src)],
             'raster': raster_facts(j['stage'], src), 'vs_pad': pad}
     if j['stage'] == 'vs': full = open(msl).read(); vin_finish(key, full, refl); pull_finish(key, full, refl)   # the shadow-input and pulling libraries (dmsh_vin.py, dmsh_pull.py), from the source with every entry point

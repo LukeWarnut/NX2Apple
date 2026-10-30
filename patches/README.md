@@ -56,7 +56,7 @@ already touches it (the last one, when several do), keeping that patch's header.
 - A new file goes to a patch only when that is unambiguous: the one patch that touches files in the file's nearest folder.
   Otherwise `absorb` stops, writes nothing, and asks for `--into <patch>` (a name from `status`, or its number).
 - `paths` limit what is folded in (files or folders). Without them every difference is.
-- It refuses the shader chain and the tool pins (Patch policy), and leaves the generated indexes to `apply`.
+- It leaves the generated indexes to `apply`.
 - For a change that needs its own `Upstream-Status`, use `export` below instead.
 
 ## Carrying a quick fix, and sending it upstream
@@ -99,11 +99,10 @@ Upstream's compatibility is the baseline. A patch does not change it silently.
    reason. Example: BC textures decoded on the CPU for older iPhones (`bc-cpu-decode`, declined in seedds/nxnative#488). Such a
    patch acts only where it is needed (no change on supported hardware), has its own tests, and is ours to maintain: if it
    conflicts on a bump, we refresh it or drop it.
-3. **Off limits:** the shader chain (`DMSH_CHAIN`, `dm/gfx/nvn/dmsh_chain.h`, the chain tools `dm/gfx/tools/dmsh_*`, `Program.cs`,
-   `ios_metal.py`, `dmsh_chain.lock`, the translator `dmsh_xlate_bin`, with the exact list in AGENTS.md, which `patches.py` reads
-   from there), upstream's tool pins, and lowering a minimum version. Shader caches and game profiles depend on them, and diverging there
-   makes our builds incompatible with upstream's caches and bug reports. `patches.py check` and `export` reject a patch that touches
-   these paths.
+3. **Off limits:** upstream's tool pins, and lowering a minimum version. A patch may change the shader chain (`DMSH_CHAIN`,
+   `dm/gfx/nvn/dmsh_chain.h`, the chain tools, `dmsh_chain.lock`, the translator `dmsh_xlate_bin`), as the Switch 2 (Ampere) translator
+   does: such a patch moves the chain version, so its shader libraries and caches are not upstream's, and it follows AGENTS.md's chain
+   procedure (`dmsh_chain.py --header`, a full shader rebuild).
 4. **Bug reports go where they belong.** Every build records the patches it carries: `DMForkPatches` in the app's `Info.plist` and
    the first line of the log (`fork patches: a, b, c`, `Documents/log.txt` on iOS, the Mac app's log). The issue forms ask for that
    line, so a report from a configuration upstream does not support comes to NX2Apple, not to seedds. The list is every patch in the

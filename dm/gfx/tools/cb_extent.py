@@ -50,7 +50,7 @@ def unwritten(source, bindings):
     writable (device, not const device), so the host takes a binding as written unless the table lists it"""
     out = []
     for b in bindings:
-        if b.get("kind") != "sbuf" or "reg" not in b: continue
+        if b.get("kind") != "sbuf" or b.get("reg") is None: continue   # no slot decoded: nothing for the host to look up
         name = "spvDescriptorSet0." + b["msl_name"]; ok = True
         for m in re.finditer(r"\(\*" + re.escape(name) + r"\b", source):
             j = m.end()

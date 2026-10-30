@@ -2338,6 +2338,16 @@ NVN_NOPROTO(nvnQueueBuilderSetPrimaryQueue, void, NVNqueueBuilder *b, NVNqueue *
 NVN_NOPROTO(nvnCommandBufferSetComputeOverlapMode, void, NVNcommandBuffer *c, int m) { (void)c; (void)m; }
 NVN_NOPROTO(nvnCommandBufferSetGeometryProcessingMode, void, NVNcommandBuffer *c, int m) { (void)c; (void)m; }
 NVN_NOPROTO(nvnCommandBufferSetRecordingMode, void, NVNcommandBuffer *c, int m) { (void)c; (void)m; }
+// NVN2 push constants: (command buffer, 0, offset, size, data), measured from Donkey Kong Bananza's calls (the second argument was always 0; graphics push 16 bytes, compute 32).
+// The bytes are copied into the command stream; a graphics shader reads them as constant bank 24 (its NDSR upscaler's vertex shader: c[24][0x0..0x7]), a compute shader in its own
+// c0 after the uniform pointers (dmsh_build.py nvn2_cs_layout). Unimplemented, the upscaler drew nothing and every 3D scene stayed the clear colour
+enum { PUSH_MAX = 256 };
+static void push_const(NVNcommandBuffer *c, int compute, uint64_t off, uint64_t n, const void *data) {
+    if (!data || !n || off + n > PUSH_MAX) { if (n) ONCE_LOG("[RED] push constants out of range: offset %#llx size %#llx", (unsigned long long)off, (unsigned long long)n); return; }
+    p_push_const *r = rec(c, OP_PUSH_CONST, sizeof *r + (size_t)n); *r = (p_push_const){compute, (int32_t)off, (int32_t)n, 0}; memcpy(r->bytes, data, (size_t)n);
+}
+NVN_NOPROTO(nvnCommandBufferPushGraphicsConstants, void, NVNcommandBuffer *c, uint64_t zero, uint64_t off, uint64_t n, const void *data) { (void)zero; push_const(c, 0, off, n, data); }
+NVN_NOPROTO(nvnCommandBufferPushComputeConstants, void, NVNcommandBuffer *c, uint64_t zero, uint64_t off, uint64_t n, const void *data) { (void)zero; push_const(c, 1, off, n, data); }
 
 // ---------- Commands used by newer-SDK games (SMBW): most map onto existing record formats, the replay layer is unchanged ----------
 // Singular / combined forms → plural / separate forms; state the replay layer does not have yet (conditional render, depth bounds, ...) is logged once and drawing continues (better to over-draw than to drop).

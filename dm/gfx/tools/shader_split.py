@@ -184,6 +184,31 @@ def bahs_shaders(d, label):
     bahs_variations(d, label, [o[0] for o in out])
     return out
 
+def ndsr_shaders(d, label):
+    """agl's NDSR pack (Switch 2: agl_ndsr.pck in Lib/agl/agl_resource, the shaders of the resolution upscaler that brings a 3D scene drawn at a lower
+    resolution up to the screen's): a table from +0x10 of 16-byte records {u32 offset, u32 kind, u32 offset, u32 flags} up to the first code area.
+    A shader record (kind 0xd80 vertex, 0xd83 pixel, 0xd86 compute) points at its full 0xd8-byte NVN2 control (nvn2_control) and its code area; other
+    kinds point at data. The stage comes from the SPH when its type (word 0, bits 0-4) is graphics, else the control's thread group makes it compute:
+    a pixel control is not 0 at +0x58 (Bananza's read (0, 0, 65536)). Donkey Kong Bananza: 30 shaders (24 compute); without them every 3D scene showed only the
+    clear colour behind the HUD"""
+    out = []
+    first_code = len(d)
+    e = 0x10
+    while e + 16 <= min(first_code, len(d)):
+        ctl_off, _kind, code_off, _flags = struct.unpack_from('<4I', d, e); e += 16
+        if ctl_off + 0xd0 > len(d) or d[ctl_off:ctl_off + 4] != CTL_MAGIC: continue
+        own = struct.unpack_from('<I', d, ctl_off + 0x30)[0] or struct.unpack_from('<I', d, ctl_off + 0xc4)[0]
+        ctl = d[ctl_off:ctl_off + own]; nv = nvn2_control(ctl)
+        if not nv or code_off + nv[1] > len(d): continue
+        first_code = min(first_code, code_off)
+        code = d[code_off:code_off + nv[1]]
+        w0 = struct.unpack_from('<I', code, 0)[0]
+        x, y, z = nvn2_group(ctl)
+        st = SPH_STAGE.get(w0 >> 10 & 0xf) if w0 & 0x1f in (1, 2) else 'cs' if x * y * z else None
+        if not st: red(f'{label} NDSR record at {e - 16:#x}: no stage (SPH word 0 {w0:#x}, thread group {x}, {y}, {z})')
+        out.append((f'{label}#NDSR@{ctl_off:#x}', st, ctl, code))
+    return out
+
 BAHS_KIND = {0: 'vs', 1: 'ps', 3: 'cs'}   # binary record kind → stage (bahs_variations' layout)
 BAHS_VAR = {}   # BAHS entry label → the program variation it belongs to (bahs_variations; var_pairs pairs by it)
 def bahs_variations(d, label, entries):
@@ -2103,6 +2128,7 @@ def scan_blob(d, label, out):
         for nm, m in sarc_members(d): scan_blob(m, f'{label}/{nm}', out)
         return
     if d[:4] == b'BAHS': out.extend(bahs_shaders(d, label)); return
+    if d[:4] == b'NDSR': out.extend(ndsr_shaders(d, label)); return
     if d[:len(TFXO)] == TFXO: out.extend(tfxo_shaders(d, label)); return
     if d[:4] == b'MSHD': out.extend(mshd_shaders(d, label)); return
     if d[:4] == PGDAT and len(d) >= 0x1c and (mem := pgdat_members(d, label)) is not None:   # PlatinumGames

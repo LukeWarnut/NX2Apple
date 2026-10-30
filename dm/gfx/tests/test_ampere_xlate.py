@@ -104,6 +104,20 @@ class AmpereTranslation(Translating):
         self.assertIn('gl_FragCoord.w', msl)
         self.assertIn('clamp(', msl)
 
+    def test_texture_f16_results_are_packed_in_pairs(self):
+        # TEX.F16 (bit 79): (R, G) packed as halves in Rd, (B, A) in Rd + 1 when Rd2 is RZ; the colour output reads R0..R3 as they are.
+        # Donkey Kong Bananza's text shaders take the glyph's coverage from the upper half of the second register
+        def code(f16):
+            return PS_SPH + program(
+                inst(0x326, (16, 8, 4), (32, 8, RZ), (64, 8, 0x90 >> 2)),
+                inst(0x326, (16, 8, 5), (32, 8, RZ), (64, 8, 0x94 >> 2)),
+                inst(0xb60, (16, 8, 0), (24, 8, 4), (32, 8, 5), (40, 14, 0x20 >> 2), (54, 5, 2), (60, 1, 1), (61, 3, 1), (64, 8, RZ), (72, 4, 0xf), (81, 3, PT), *([(79, 1, 1)] if f16 else [])),
+                EXIT)
+        _, packed = self.translate('ps', code(True))
+        _, plain = self.translate('ps', code(False))
+        self.assertIn('half2(', packed)
+        self.assertNotIn('half2(', plain)
+
     def test_switch_table_in_c1(self):
         # index = min(c[3][0], 1); BRX through the table at c[1][0] (offsets from the first instruction), each case writes the position's x
         head = [

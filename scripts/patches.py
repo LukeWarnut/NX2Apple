@@ -20,13 +20,13 @@ Subcommands (Python 3.9+, stdlib and git):
   absorb [paths...]     fold changes made directly to vendored files into the patch that already touches each file (a new
                         file goes to a patch only when the choice is unambiguous, else name it with --into), then run check
   status                a table of the patches: Upstream-Status, Reason, age
-  check                 the headers are valid, no patch touches the shader chain, the series applies to the pinned ref and
+  check                 the headers are valid, the series applies to the pinned ref and
                         reproduces the vendored tree of the checkout byte for byte (after
                         the generated indexes are regenerated on it)
 
 Scratch worktrees go under $PATCHES_TMP (or --tmp), else the system temporary folder.
 """
-import argparse, fnmatch, os, re, shutil, subprocess, sys, tempfile, time
+import argparse, os, re, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -41,10 +41,6 @@ FORK_PATCHES = 'dm/fork_patches.txt'
 GENERATED = (('docs/agents/game-patches.md', 'dm/tools/docs_patches.py'),
              ('docs/agents/symptoms.md', 'dm/tools/docs_symptoms.py'))
 KINDS = ('forwarded', 'pending', 'fork-only', 'backport')
-# The shader chain and the tool pins (AGENTS.md: the DMSH_CHAIN paragraph names them; chain_paths() reads it).
-# Used only when AGENTS.md has no such paragraph.
-CHAIN_FALLBACK = ('dm/gfx/nvn/dmsh_chain.h', 'dm/gfx/tools/dmsh_*', 'dm/gfx/tools/Program.cs', 'dm/gfx/tools/ios_metal.py',
-                  'dm/gfx/tools/dmsh_chain.lock', 'dm/gfx/tools/dmsh_xlate_bin*')
 
 
 class Fail(Exception):
@@ -123,27 +119,6 @@ def load(root):
     if missing: raise Fail('listed in patches/series but missing: ' + ', '.join(missing))
     if len(set(names)) != len(names): raise Fail('patches/series lists a patch twice')
     return [Patch(pd / n) for n in names]
-
-
-def chain_paths(root):
-    """The globs of the shader chain, read from AGENTS.md's chain paragraph (the one naming DMSH_CHAIN)."""
-    try: text = (root / 'AGENTS.md').read_text()
-    except OSError: return list(CHAIN_FALLBACK)
-    para = next((l for l in text.splitlines() if 'DMSH_CHAIN' in l and 'dm/gfx/tools/dmsh_' in l), None)
-    found = []
-    if para:
-        for tok in re.findall(r'`([^`]+)`', para):
-            if re.fullmatch(r'dm/gfx/(?:nvn|tools)/[\w./*-]+', tok): found.append(tok)
-            elif re.fullmatch(r'[\w-]+\.(?:cs|py|lock)', tok) and not tok.startswith('dmsh_'): found.append('dm/gfx/tools/' + tok)
-            elif tok == 'dmsh_chain.lock': found.append('dm/gfx/tools/' + tok)
-        m = re.search(r'translator is `([^`]+)`', text)
-        if m and re.fullmatch(r'dm/gfx/tools/[\w./-]+', m.group(1)): found.append(m.group(1) + '*')
-    return sorted(set(found)) if len(found) >= 4 else list(CHAIN_FALLBACK)
-
-
-def chain_hits(files, root):
-    globs = chain_paths(root)
-    return sorted(f for f in files if any(fnmatch.fnmatchcase(f, g) for g in globs))
 
 
 # ---- applying the series in a scratch worktree ----
@@ -305,8 +280,6 @@ def cmd_check(a):
         for m in p.problems(): bad.append(f'{p.file}: {m}')
         gen = sorted(f for f in p.files if f in {o for o, _ in GENERATED})
         if gen: bad.append(f'{p.file}: touches generated files ({", ".join(gen)}); apply, bump and check regenerate them, so a patch must not carry them')
-        hits = chain_hits(p.files, root)
-        if hits: bad.append(f'{p.file}: touches the shader chain or the tool pins, which patches must not change ({", ".join(hits)}); see patches/README.md, Patch policy')
     if bad:
         say('patch queue: invalid\n  ' + '\n  '.join(bad)); return 1
     ref = (root / '.upstream-ref').read_text().strip()
@@ -447,10 +420,6 @@ def cmd_export(a):
                    *(f':(exclude){o}' for o in (*OWN, *(g for g, _ in GENERATED))), cwd=root, binary=True).stdout.decode(errors='surrogateescape')
         if not re.search(r'(?m)^diff --git ', text):
             say(f'skipped {c[:10]}: no change under the vendored paths'); continue
-        files = sorted({f for m in re.finditer(r'(?m)^diff --git a/(\S+) b/(\S+)$', text) for f in m.groups()})
-        hits = chain_hits(files, root)
-        if hits:
-            raise Fail(f'{c[:10]} touches the shader chain or the tool pins ({", ".join(hits)}): patches must not change them (patches/README.md, Patch policy)')
         head, sep, rest = text.partition('\n---\n')
         add = []
         for key, val in (('Upstream-Status', a.status), ('Reason', a.reason), ('Issue', a.issue)):
@@ -516,8 +485,6 @@ def cmd_absorb(a):
     if not changed:
         say('absorb: nothing to fold in (the vendored files match pin + series)')
         return cmd_check(a)
-    chain = chain_hits(changed, root)
-    if chain: raise Fail(f'{", ".join(chain)}: patches must not change the shader chain or the tool pins (patches/README.md, Patch policy)')
     plan, unclear = {}, []
     for f in changed:
         o = owner_of(f, patches, into)

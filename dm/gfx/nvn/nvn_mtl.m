@@ -1566,7 +1566,7 @@ void mtl_drain(void) { present_drop_for_suspend(); mtl_present_flush(); snap_dra
 
 // ================= Render replay =================
 #include "../../host/front.h"
-static int g_red_once[121];
+static int g_red_once[122];
 #define RED_ONCE(k, ...) do { if (!g_red_once[k]++) MLOG("[RED] " __VA_ARGS__); } while (0)
 // NVN vertex streams 0–15 → Metal vertex buffer slots: 0–13 go to 16–29 (30 is the constant fallback buffer), 14 and 15 to 14 and 15. Metal has only the 31 slots 0–30; translated shaders use only buffer(0) (the argument buffer),
 // and the host's own vertex functions read no vertex buffers. 13 Sentinels uses stream 15, and the old 16 + stream went out of range (Metal assertion: buffer index (31) must be < 31)
@@ -4423,6 +4423,7 @@ static struct {
     va_st attr[16]; int nattr; vs_st stream[16]; int nstream;
     NVNbufferRange vbuf[16];
     p_bind_buf ubo[6][16], ssbo[6][16];
+    uint8_t push[2][256];      // NVN2 push constants, graphics and compute (OP_PUSH_CONST)
     uint64_t tex[6][NTEX], samp[6][128], img[6][32];
     uint32_t st_vmask[2], st_wmask[2], st_ref[2];
     p_poly_offset po; float vp[16][4]; float dr[2]; int has_vp; int depth_clamp; uint8_t vp_sw[16][4];   // vp_sw: viewport swizzles XOR the identity (p_vp_swizzle)
@@ -6656,6 +6657,9 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             if (addr && mtl_gpu_addr(addr, 1, &mb, &mo, &gpu)) { slots[aid] = gpu; USE((__bridge id<MTLBuffer>)mb, b->rw ? MTLResourceUsageRead | MTLResourceUsageWrite : MTLResourceUsageRead); if (b->rw) sbw_note(addr, 0, SBW_GPU); }   // size not known
             else { slots[aid] = dummy_buf_gpu(); USE(dummy_buf(), MTLResourceUsageRead); }
             if (bl) PD("B %llu st%d sbufu reg%d+%#x addr=%#llx %s", g_stat_pass, nvn_stage, reg, b->off, (unsigned long long)addr, b->rw ? "rw" : "ro");
+        } else if (b->kind == NVN_RB_PUSH) {    // NVN2 push constants of the graphics stages (bank 24): the bytes last pushed
+            id<MTLBuffer> pb; size_t poff = arena_alloc(sizeof S.push[0], &pb); memcpy((uint8_t *)pb.contents + poff, S.push[nvn_stage == 5], sizeof S.push[0]);
+            slots[aid] = pb.gpuAddress + poff; USE(pb, MTLResourceUsageRead);
         } else if (b->kind == NVN_RB_C1) {      // B: the shader's own constant segment, built when the shader is fetched
             id<MTLBuffer> cb = sh->c1buf ? sh->c1buf : zero_bank();   // c1 has length 0 (600 of them in the whole library) yet the shader still declares it: reads 0
             slots[aid] = (sh->c1buf ? sh->c1_gpu : zero_bank_gpu()) + (sh->c1buf ? sh->c1off : 0);
@@ -6687,6 +6691,8 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
                     // transform this way, and 1,550 reads in 793 of its vertex shaders. Left at 0, every box was box 0: all six queries came back empty, and the game, taking its characters for
                     // hidden, posed their legs straight back from the hips. 0x640 (read by 58 shaders, added to the vertex ID) stays 0: what the driver puts there is not established
                     if (nvn_stage != 5) memcpy(d + 0x644, &g_draw_binst, 4);
+                    // NVN2 compute: the push constants sit in the program's own c0 (dmsh_build.py nvn2_cs_layout); the Maxwell tables written here lie past them
+                    if (nvn_stage == 5 && sh->rf.c0_push >= 0 && sh->rf.c0_push + sh->rf.c0_push_n <= DRV_SIZE && sh->rf.c0_push_n <= (int)sizeof S.push[1]) memcpy(d + sh->rf.c0_push, S.push[1], (size_t)sh->rf.c0_push_n);
                     if (nvn_stage == 5) {
                         memcpy(d + 0x200, g_dispatch_dim, 12); g_c0_dim_buf = db; g_c0_dim_off = doff + 0x200;
                         for (int r = 0; r < 16; r++) { uint64_t a = S.ubo[5][r].addr; uint32_t n = (uint32_t)S.ubo[5][r].size; memcpy(d + 0x210 + 16 * r, &a, 8); memcpy(d + 0x210 + 16 * r + 8, &n, 4); }
@@ -6962,6 +6968,12 @@ static int state_op(uint32_t op, const void *a) {
         case OP_BIND_VSTREAM: { const p_bind_vstream *b = a; if (S.nstream != b->n || memcmp(S.stream, b->st, 8 * b->n)) { memcpy(S.stream, b->st, 8 * b->n); S.nstream = b->n; g_pso_dirty = 1; } break; }
         case OP_BIND_VBUF: case OP_BIND_VBUF1: { p_bind_vbuf tmp; const p_bind_vbuf *b = vbuf_rec(op, a, &tmp); memcpy(&S.vbuf[b->first], b->r, sizeof *b->r * b->n); break; }
         case OP_BIND_UBO: case OP_BIND_UBO_SMALL: { p_bind_buf tmp; const p_bind_buf *b = bind_buf_rec(op, a, &tmp); if (b->stage < 6 && b->index < 16 && memcmp(&S.ubo[b->stage][b->index], b, sizeof *b)) { S.ubo[b->stage][b->index] = *b; g_args_dirty[b->stage] = 1; } break; }
+        case OP_PUSH_CONST: { const p_push_const *b = a; int k = b->compute ? 1 : 0;
+            if (b->off >= 0 && b->n > 0 && b->off + b->n <= (int)sizeof S.push[k] && memcmp(S.push[k] + b->off, b->bytes, (size_t)b->n)) {
+                memcpy(S.push[k] + b->off, b->bytes, (size_t)b->n);
+                if (k) g_args_dirty[5] = 1; else for (int st = 0; st < 5; st++) g_args_dirty[st] = 1;
+            }
+            break; }
         case OP_BIND_SSBO: { const p_bind_buf *b = a; if (b->stage < 6 && b->index < 16 && memcmp(&S.ssbo[b->stage][b->index], b, sizeof *b)) { S.ssbo[b->stage][b->index] = *b; g_args_dirty[b->stage] = 1; } break; }
         case OP_BIND_TEX: case OP_BIND_TEX1: { p_bind_handles t1; const p_bind_handles *b = bind_rec(op, a, &t1);
             if (b->n < 0 || b->n > 32) {   // the recorder never writes more than 32 (bind_handles): the record was overwritten after it was recorded
@@ -7201,7 +7213,7 @@ static int sm_scan(const uint8_t *p, const p_set_rt *rt, int cur, int *lo, int *
             case OP_BARRIER: { int32_t bits; memcpy(&bits, a, 4); if (bits) return n; break; }
             case OP_UPDATE_UB: if (!ubd_on()) return n; break;
             case OP_DRAW: case OP_DRAW_IDX: case OP_VIEWPORTS: case OP_SCISSOR: case OP_DEPTH_RANGE: case OP_BIND_PROGRAM: case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM:
-            case OP_BIND_VBUF: case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_TEX1: case OP_BIND_SAMP: case OP_BIND_IMG: case OP_STENCIL: case OP_POLY_OFFSET:
+            case OP_BIND_VBUF: case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_TEX1: case OP_BIND_SAMP: case OP_BIND_IMG: case OP_STENCIL: case OP_POLY_OFFSET: case OP_PUSH_CONST:
             case OP_BLEND_COLOR: case OP_DEPTH_CLAMP: case OP_VP_SWIZZLE: case OP_PRIM_RESTART: case OP_SET_TEX_POOL: case OP_SET_SAMP_POOL: case OP_COPY_STRIDE: break;
             default: return n;
         }
@@ -8745,7 +8757,7 @@ static int lc_keeps(uint32_t op) {
         case OP_BIND_UBO: case OP_BIND_UBO_SMALL: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_TEX1: case OP_BIND_SAMP: case OP_BIND_IMG: case OP_STENCIL:
         case OP_POLY_OFFSET: case OP_VIEWPORTS: case OP_DEPTH_RANGE: case OP_DEPTH_CLAMP: case OP_VP_SWIZZLE: case OP_BLEND_COLOR: case OP_COPY_STRIDE:
         case OP_TF_BIND: case OP_TF_STATE: case OP_RAST_DISCARD: case OP_PRIM_RESTART: case OP_BARRIER: case OP_SET_TEX_POOL: case OP_SET_SAMP_POOL: case OP_RENDER_COND:
-        case OP_UPDATE_UB: case OP_COPY_B2B: case OP_CLEAR_BUF: return 1;
+        case OP_UPDATE_UB: case OP_COPY_B2B: case OP_CLEAR_BUF: case OP_PUSH_CONST: return 1;
         default: return 0;
     }
 }
@@ -9229,6 +9241,65 @@ static id<MTL4ComputeCommandEncoder> dispatch_enc(void) {
     args_dirty_all();
     return e;
 }
+// Stand-in for NVN2's neural upscaler (agl_ndsr.pck: Donkey Kong Bananza draws its 3D scene at a lower resolution, e.g. 2095x1179, and a tensor-core network brings it to
+// the screen's). The translator has none of its matrix instructions (HMMA, LDSM) nor its image stores, so the network wrote nothing and every such scene stayed the clear colour.
+// dmsh_build.py marks those programs ("standin": "upscale"); their dispatch is replaced by a bilinear scale of compute texture slot 0 (the scene after SMAA) into the image the game
+// binds for the output: the network's image stores take their handle from c0 0x70, 8 bytes past its one texture handle at 0x68, i.e. image slot 1 (Bananza binds only that one, the
+// full-size scene target). The lowest bound image slot is taken. Softer than the network, but the scene shows
+static const char *k_upscale_msl = "#include <metal_stdlib>\nusing namespace metal;\n"
+    "struct A { texture2d<float> src [[id(0)]]; texture2d<float, access::write> dst [[id(1)]]; };\n"
+    "kernel void up(constant A &a [[buffer(0)]], uint2 p [[thread_position_in_grid]]) {\n"
+    "    uint w = a.dst.get_width(), h = a.dst.get_height(); if (p.x >= w || p.y >= h) return;\n"
+    "    constexpr sampler s(filter::linear, address::clamp_to_edge, coord::normalized);\n"
+    "    a.dst.write(a.src.sample(s, (float2(p) + 0.5) / float2(w, h), level(0)), p);\n"
+    "}\n";
+static void upscale_standin(NvShader *cs) {
+    static id<MTLComputePipelineState> ps; static int failed;
+    if (!ps && !failed) { NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(k_upscale_msl) options:nil error:&e]; id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"up"] : nil;
+        ps = fn ? [g_dev newComputePipelineStateWithFunction:fn error:&e] : nil; if (!ps) { failed = 1; MLOG("[RED] upscale stand-in: cannot build its kernel: %s", e.localizedDescription.UTF8String); } }
+    if (!ps) return;
+    os_unfair_lock_lock(&g_rmu);
+    int stid = (int)(tex_slot_h(S.tex[5], S.img[5], 0) & 0xfffff), dtid = 0;
+    for (int r = 0; r < 32 && !dtid; r++) dtid = (int)(S.img[5][r] & 0xfffff);
+    void *sv = NULL, *dv = NULL; uint64_t srid = stid ? tex_fast_rid(stid, &sv) : 0; if (dtid) tex_fast_rid(dtid, &dv);
+    os_unfair_lock_unlock(&g_rmu);
+    id<MTLTexture> src = (__bridge id<MTLTexture>)sv, dst = (__bridge id<MTLTexture>)dv;
+    // The scene target is registered as a channel-swizzled view without shader-write usage (Metal refuses image stores to it; the network's binding of it as an image cannot be
+    // honoured as such): the kernel writes a host texture of the target's size and format, which is then copied into the target's level and slice
+    id<MTLTexture> out = dst && dst.parentTexture ? dst.parentTexture : dst; NSUInteger olv = dst && dst.parentTexture ? dst.parentRelativeLevel : 0, osl = dst && dst.parentTexture ? dst.parentRelativeSlice : 0;
+    static id<MTLTexture> scratch;
+    if (out && (!scratch || scratch.width != dst.width || scratch.height != dst.height || scratch.pixelFormat != out.pixelFormat)) {
+        MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:out.pixelFormat width:dst.width height:dst.height mipmapped:NO];
+        d.usage = MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead; d.storageMode = MTLStorageModePrivate;
+        if (scratch) defer_obj_release(scratch);
+        scratch = [g_dev newTextureWithDescriptor:d]; if (scratch) res_add(scratch);
+    }
+    if (!src || !dst || !scratch || src.textureType != MTLTextureType2D || dst.textureType != MTLTextureType2D) {
+        char bound[256] = ""; size_t o = 0;   // the image slots the game did bind, for the report
+        for (int r = 0; r < 32 && o < sizeof bound - 16; r++) if (S.img[5][r] & 0xfffff) o += (size_t)snprintf(bound + o, sizeof bound - o, " %d:%d", r, (int)(S.img[5][r] & 0xfffff));
+        RED_ONCE(121, "upscale stand-in for %s: no 2D input in texture slot 0 or no 2D output image (texture IDs %d / %d, Metal types %ld / %ld; image slots bound:%s): the scene is not drawn",
+                 cs->key, stid, dtid, src ? (long)src.textureType : -1L, dst ? (long)dst.textureType : -1L, o ? bound : " none");
+        return;
+    }
+    uint64_t drid = scratch.gpuResourceID._impl;
+    { static int once; if (!once++) MLOG("upscale stand-in: the neural upscaler %s is replaced by a bilinear scale, %lux%lu → %lux%lu (first dispatch)", cs->key,
+                                         (unsigned long)src.width, (unsigned long)src.height, (unsigned long)dst.width, (unsigned long)dst.height); }
+    { static int n; if (getenv("DM_UPSCALE_TRACE") && n++ < 24) {   // TEMP TRACE
+        char bound[256] = ""; size_t o = 0; for (int r = 0; r < 32 && o < sizeof bound - 16; r++) if (S.img[5][r] & 0xfffff) o += (size_t)snprintf(bound + o, sizeof bound - o, " %d:%d", r, (int)(S.img[5][r] & 0xfffff));
+        char texs[256] = ""; o = 0; for (int r = 0; r < 8 && o < sizeof texs - 16; r++) if (S.tex[5][r] & 0xfffff) o += (size_t)snprintf(texs + o, sizeof texs - o, " %d:%d", r, (int)(S.tex[5][r] & 0xfffff));
+        MLOG("[upscale-trace] frame %llu %s src tid %d %lux%lu ser %llu dst tid %d %lux%lu ser %llu images%s textures%s", (unsigned long long)atomic_load(&g_cur_frame), cs->key, stid, (unsigned long)src.width, (unsigned long)src.height,
+             stid < g_ntreg ? (unsigned long long)g_treg[stid].t.serial : 0ull, dtid, (unsigned long)dst.width, (unsigned long)dst.height, dtid < g_ntreg ? (unsigned long long)g_treg[dtid].t.serial : 0ull, bound, texs); } }
+    rp_end(); if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
+    id<MTLComputeCommandEncoder> ce = pg_compute();
+    enc_c_pso(ce, ps);
+    id<MTLBuffer> ab; size_t ao = arena_alloc(16, &ab); uint64_t *ids = (uint64_t *)((uint8_t *)ab.contents + ao); ids[0] = srid; ids[1] = drid;
+    enc_c_args(ce, ab.gpuAddress + ao, 0);
+    enc_c_dispatch(ce, MTLSizeMake((dst.width + 15) / 16, (dst.height + 15) / 16, 1), MTLSizeMake(16, 16, 1));
+    [(id<MTL4ComputeCommandEncoder>)ce barrierAfterEncoderStages:MTLStageDispatch beforeEncoderStages:MTLStageBlit visibilityOptions:resource_vis()];
+    [(id<MTL4ComputeCommandEncoder>)ce copyFromTexture:scratch sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(dst.width, dst.height, 1)
+                                              toTexture:out destinationSlice:osl destinationLevel:olv destinationOrigin:MTLOriginMake(0, 0, 0)];
+    enc_c_end(ce);
+}
 static void dispatch(const p_dispatch *dp) {
     zskip_clear();
     g_wr_epoch++; g_mdx_epoch++;
@@ -9239,6 +9310,7 @@ static void dispatch(const p_dispatch *dp) {
     if (dp->ind) { static int once; if (!once++) MLOG("indirect dispatch: first time (the GPU reads the threadgroup counts from %#llx)", (unsigned long long)dp->ind); }
     NvShader *cs = prog_get(S.cprog)->sh[5];
     if (!cs) { RED_ONCE(28, "the dispatched program has no compute shader (or it is not mapped)"); return; }
+    if (cs->rf.standin == NVN_STANDIN_UPSCALE) { upscale_standin(cs); return; }
     const void *k = (__bridge const void *)cs;
     id<MTLComputePipelineState> ps = hm_get_id(&g_cps, &k);
     if (!ps) {
@@ -10041,7 +10113,7 @@ void mtl_exec(const uint8_t *p) {
                 break; }
             case OP_SCISSOR: case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF: case OP_BIND_VBUF1:
             case OP_BIND_UBO: case OP_BIND_UBO_SMALL: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_TEX1: case OP_BIND_SAMP: case OP_BIND_IMG: case OP_STENCIL:
-            case OP_POLY_OFFSET: case OP_VIEWPORTS: case OP_DEPTH_RANGE: case OP_DEPTH_CLAMP: case OP_VP_SWIZZLE: case OP_BLEND_COLOR: case OP_COPY_STRIDE:
+            case OP_POLY_OFFSET: case OP_VIEWPORTS: case OP_DEPTH_RANGE: case OP_DEPTH_CLAMP: case OP_VP_SWIZZLE: case OP_BLEND_COLOR: case OP_COPY_STRIDE: case OP_PUSH_CONST:
                 state_op(h.op, a); break;
             case OP_TF_BIND: { const p_tf_bind *b = a; PD("Y tf bind %d addr=%#llx size=%llu", b->index, (unsigned long long)b->addr, (unsigned long long)b->size); state_op(h.op, a); break; }
             case OP_TF_STATE: { const p_tf_state *b = a; static const char *const w[4] = {"begin", "end", "pause", "resume"}; PD("Y tf %s ctl=%#llx", w[b->what & 3], (unsigned long long)b->ctl);

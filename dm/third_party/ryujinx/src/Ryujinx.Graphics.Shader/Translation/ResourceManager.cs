@@ -66,7 +66,9 @@ namespace Ryujinx.Graphics.Shader.Translation
             _stage = stage;
             _stagePrefix = GetShaderStagePrefix(stage);
 
-            _cbSlotToBindingMap = new SetBindingPair[18];
+            // nxnative: 32 banks, Ampere's 5-bit bank number (Maxwell has 18). NVN2 puts the graphics push constants in bank 24: Donkey Kong Bananza's upscaler
+            // vertex shaders read c[24][0x0], and with 18 slots their translation failed (IndexOutOfRangeException in GetConstantBufferBinding)
+            _cbSlotToBindingMap = new SetBindingPair[32];
             // nxnative: 32 storage buffers (the written mask is a uint). Maxwell NVN has 16 per stage; Switch 2 NVN2 compute programs address more (Donkey Kong Bananza: 17 in c[0] 0x60-0x1e0)
             _sbSlotToBindingMap = new SetBindingPair[32];
             _cbSlotToBindingMap.AsSpan().Fill(new(-1, -1));

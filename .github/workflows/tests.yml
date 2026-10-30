@@ -136,7 +136,7 @@ jobs:
         with:
           python-version: '3.14'
       # scripts/patches.py check: the series applies to the pinned upstream (.upstream-ref) and reproduces the committed vendored tree. A vendored
-      # file edited without a patch, a patch whose header is incomplete and a patch that touches the shader chain fail here. The dry bump to
+      # file edited without a patch and a patch whose header is incomplete fail here. The dry bump to
       # seedds main only reports (the nightly sync opens the PR or the issue); it lists the patches that would conflict.
       - name: Fetch seedds main and the pinned base
         run: |

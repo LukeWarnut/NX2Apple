@@ -7,7 +7,9 @@
 #include <stdint.h>
 
 enum { NVN_RB_CBUF = 1, NVN_RB_SAMP, NVN_RB_TEX, NVN_RB_IMG, NVN_RB_TBUF,
-       NVN_RB_SBUFP, NVN_RB_SUPPORT, NVN_RB_C1, NVN_RB_DRV0, NVN_RB_DRV2, NVN_RB_SAMPT, NVN_RB_UBOP, NVN_RB_TEXU, NVN_RB_SAMPU, NVN_RB_SAMPI, NVN_RB_SBUFU, NVN_RB_TEXD, NVN_RB_SAMPD, NVN_RB_TEXA, NVN_RB_SAMPA, NVN_RB_GEOMETRY };
+       NVN_RB_SBUFP, NVN_RB_SUPPORT, NVN_RB_C1, NVN_RB_DRV0, NVN_RB_DRV2, NVN_RB_SAMPT, NVN_RB_UBOP, NVN_RB_TEXU, NVN_RB_SAMPU, NVN_RB_SAMPI, NVN_RB_SBUFU, NVN_RB_TEXD, NVN_RB_SAMPD, NVN_RB_TEXA, NVN_RB_SAMPA, NVN_RB_GEOMETRY, NVN_RB_PUSH };
+enum { NVN_STANDIN_NONE = 0, NVN_STANDIN_UPSCALE };
+// PUSH: NVN2 push constants as a graphics stage reads them, constant bank 24 (dmsh_build.py kind "push"; nvn_mtl.m binds the bytes last pushed, S.push)
 // TEXA / SAMPA: an array of n handles in the driver table c2 that the shader indexes at run time (dmsh_build.py c2_array): element k = the texture / sampler of the slot whose c2 word lies
 // at byte off + 8k (combined, else separate); words outside both tables give the dummy. Luigi's Mansion 3's shadow cascades
 // TEXD / SAMPD: Ryujinx's fallback for a texture handle it cannot trace to one slot (handle type 4, <stage>_<t|tb|s>_cb0_40000000): an array of n textures / samplers indexed by
@@ -42,6 +44,8 @@ typedef struct {
     uint8_t route_b, has_c1; // Route B; has a c1 constant segment
     uint8_t bindless;        // Has TEXU / SAMPU bindings (which texture is read is known only at replay time)
     uint8_t dyn;             // Has TEXD / SAMPD bindings: c2's texture and sampler tables hold slot indices for this shader
+    uint8_t standin;         // NVN_STANDIN_*: the replay runs its own kernel instead of this program (dmsh_build.py "standin"; nvn_mtl.m upscale_standin)
+    int16_t c0_push, c0_push_n;   // NVN2 compute: where the program's c0 holds the push constants and how many bytes (dmsh_build.py nvn2_cs_layout); -1 = none
     uint8_t drv_read[3];     // B: reads driver segments c0 / c2 at runtime (indices 0, 2; gathered statically from the MSL at packaging time, tools/dmsh_build.py drv_reads)
     uint16_t c1_len;         // Length of the c1 constant segment (B; 0 / 256 / 512 / 768 across the whole library)
     // For the fully-covering-first-draw proof (dmsh_build.py raster_facts; missing field = not provable): vertex - position xyz taken as-is from attribute pos_attr (-1 = no), w is the constant 1 (pos_w1) or taken from the same attribute's .w;

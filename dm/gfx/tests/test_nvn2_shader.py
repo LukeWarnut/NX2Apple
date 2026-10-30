@@ -91,6 +91,23 @@ class Nvn2ShaderTests(unittest.TestCase):
         self.assertEqual([(st, code) for _w, st, _c, code in got], [('vs', vs), ('cs', cs)])
         self.assertEqual(split.ctl_len(got[0][2]), 0xd8)
 
+    def test_ndsr_pack_is_read(self):
+        """agl's NDSR pack: 16-byte records from +0x10, shader records point at a full control and a code area, other records are skipped"""
+        vs, ps, cs = b'\x81\x04\x0c\x02' + bytes(0xfc), b'\x82\x54\x0c\x00' + bytes(0x7c), bytes(0x100)
+        d = bytearray(0x100)
+        d[:4] = b'NDSR'
+        layout = [(0xd80, vs, (0, 0, 0)), (0x50c, None, None), (0xd83, ps, (0, 0, 65536)), (0xd86, cs, (128, 1, 1))]
+        recs = []
+        for kind, code, group in layout:
+            if code is None: recs.append((0x40, kind, 0x40, 0)); continue
+            co = len(d); d += code
+            cl = len(d); d += nvn2_ctl(len(code), group=group)
+            recs.append((cl, kind, co, 0))
+        for i, r in enumerate(recs): struct.pack_into('<4I', d, 0x10 + 16 * i, *r)
+        got = split.ndsr_shaders(bytes(d), 'agl_ndsr.pck')
+        self.assertEqual([(st, code) for _w, st, _c, code in got], [('vs', vs), ('ps', ps), ('cs', cs)])
+        self.assertTrue(all(split.check(w, st, c, code) is None for w, st, c, code in got))
+
     def test_bananza_main_if_present(self):
         main = Path('/Users/lwarn/Downloads/Donkey Kong Bananza (v3.2.0)/040074A01BF12000_build/extract/v458752/ExeFS/main')
         if not main.is_file(): self.skipTest('Bananza dump is not on this machine')

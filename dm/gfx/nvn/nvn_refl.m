@@ -31,7 +31,7 @@ static int arr_len(NSString *ty, NSString **el) {
 // Whether a storage buffer binding may be written: current B reflection carries the translator's write flag ("rw"); old samples without it fall back to SPIRV-Cross's const device qualifier.
 static int sbuf_rw(NSDictionary *b) { id rw = b[@"rw"]; if (rw) return [rw boolValue]; id ty = b[@"msl_type"]; return !([ty isKindOfClass:[NSString class]] && [ty hasPrefix:@"const "]); }
 int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
-    memset(o, 0, sizeof *o);
+    memset(o, 0, sizeof *o); o->c0_push = -1;
     #define FAIL(...) do { free(o->c1); o->c1 = NULL; snprintf(err, errlen, __VA_ARGS__); return 1; } while (0)
     if (![j[@"route"] isEqual:@"B"]) FAIL("not a B reflection (route ≠ B; route A / PC-chain reflection is retired)");
     {   // Translated original Switch shaders: kind and NVN slot number are already parsed from the MSL member names by dmsh_build.py
@@ -81,11 +81,14 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
             else if ([k isEqualToString:@"support"]) r->kind = NVN_RB_SUPPORT;
             else if ([k isEqualToString:@"c1"]) r->kind = NVN_RB_C1;
             else if ([k isEqualToString:@"drvcb"]) r->kind = [b[@"bank"] intValue] == 2 ? NVN_RB_DRV2 : NVN_RB_DRV0;
+            else if ([k isEqualToString:@"push"]) r->kind = NVN_RB_PUSH;
             else FAIL("B binding kind %s not implemented (%s)", k.UTF8String, [b[@"msl_name"] UTF8String]);
             if ((r->kind == NVN_RB_CBUF || r->kind == NVN_RB_SAMP || r->kind == NVN_RB_SAMPT || r->kind == NVN_RB_TEX || r->kind == NVN_RB_IMG || r->kind == NVN_RB_TBUF || r->kind == NVN_RB_SBUFP || r->kind == NVN_RB_UBOP || r->kind == NVN_RB_SBUFU || r->kind == NVN_RB_TEXU || r->kind == NVN_RB_SAMPU || r->kind == NVN_RB_SAMPI) && reg < 0)
                 FAIL("B binding %s has no resolved slot number", [b[@"msl_name"] UTF8String]);
             o->nb++;
         }
+        if ([j[@"standin"] isEqual:@"upscale"]) o->standin = NVN_STANDIN_UPSCALE;
+        if (j[@"c0_push"]) { o->c0_push = (int16_t)[j[@"c0_push"] intValue]; o->c0_push_n = (int16_t)[j[@"c0_push_n"] intValue]; }
         NSDictionary *dr = j[@"drv_reads"];
         if ([dr isKindOfClass:[NSDictionary class]]) { o->drv_read[0] = dr[@"0"] != nil; o->drv_read[2] = dr[@"2"] != nil; }
         // A declared driver-segment binding means the shader reads it: the build's drv_reads scan (dmsh_build.py) matches only fragment-shader names (fp_c0 / fp_c2), so vertex and compute

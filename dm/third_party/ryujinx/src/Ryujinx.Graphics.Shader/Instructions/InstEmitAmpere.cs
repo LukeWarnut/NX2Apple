@@ -1571,7 +1571,42 @@ namespace Ryujinx.Graphics.Shader.Instructions
             (Func<Operand> ra, Func<Operand> rb) = AmpTexSources(context, i, scalarCount);
             (int handle, int cbufSlot) = AmpTexHandle(i);
 
-            EmitTex(context, bindless ? TextureFlags.Bindless : TextureFlags.None, dim, lod, bindless ? 0 : handle, i.Bits(72, 4), ra, rb, AmpTexDests(i), false, dc, aoffi, cbufSlot);
+            if (!i.Bit(79))
+            {
+                EmitTex(context, bindless ? TextureFlags.Bindless : TextureFlags.None, dim, lod, bindless ? 0 : handle, i.Bits(72, 4), ra, rb, AmpTexDests(i), false, dc, aoffi, cbufSlot);
+
+                return;
+            }
+
+            // .F16 (bit 79): the components come back as halves, two to a register: the first pair packed in Rd, the second in Rd2 (Rd + 1 when Rd2 is RZ).
+            // Donkey Kong Bananza's text shaders read the glyph's coverage from the upper half of the second register; written as F32, alpha read 1.875 and
+            // every glyph quad came out solid. Only TEX has it in that game (3 of 134k texture instructions)
+            Operand[] values = null;
+
+            EmitTex(context, bindless ? TextureFlags.Bindless : TextureFlags.None, dim, lod, bindless ? 0 : handle, i.Bits(72, 4), ra, rb, count =>
+            {
+                values = new Operand[count];
+
+                for (int c = 0; c < count; c++)
+                {
+                    values[c] = Local();
+                }
+
+                return values;
+            }, false, dc, aoffi, cbufSlot);
+
+            if (values == null || i.Rd == RegisterConsts.RegisterZeroIndex)
+            {
+                return;
+            }
+
+            for (int pair = 0; pair * 2 < values.Length; pair++)
+            {
+                int reg = pair == 0 ? i.Rd : i.Rc != RegisterConsts.RegisterZeroIndex ? i.Rc : i.Rd + 1;
+                Operand high = pair * 2 + 1 < values.Length ? values[pair * 2 + 1] : ConstF(0);
+
+                AmpSetDest(context, reg, context.PackHalf2x16(values[pair * 2], high));
+            }
         }
 
         // TLD: integer coordinates; LOD mode 1 zero, 3 level; .MS bit 78
